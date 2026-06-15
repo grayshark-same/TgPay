@@ -819,6 +819,11 @@ def add_deposit(id, summ):
         if data:
             value=float(summ)+data[0]
             cursor.execute('UPDATE users SET balans = ? WHERE id = ?', (value, id))
+            now = datetime.now().strftime('%d.%m.%Y %H:%M:%S')
+            cursor.execute(
+                'INSERT INTO balance_log (user_id, amount, balance_after, created_at) VALUES (?, ?, ?, ?)',
+                (id, summ, value, now)
+            )
             db.commit()
             db.close()
             return summ
@@ -891,6 +896,24 @@ def cancel_request(text):
         db.close()
         return False
 #История профиля
+def get_balance_history(user_id, limit=20):
+    db = sqlite3.connect('files/users.db')
+    cursor = db.cursor()
+    cursor.execute(
+        'SELECT amount, balance_after, description, created_at FROM balance_log WHERE user_id = ? ORDER BY id DESC LIMIT ?',
+        (user_id, limit)
+    )
+    rows = cursor.fetchall()
+    db.close()
+    if not rows:
+        return ''
+    lines = []
+    for amount, balance_after, description, created_at in rows:
+        sign = '+' if amount >= 0 else ''
+        desc = f' — {description}' if description else ''
+        lines.append(f'<b>{created_at}</b>\n{sign}{amount:.2f}₽{desc}\nБаланс: {balance_after:.2f}₽\n➖➖➖➖➖➖➖')
+    return '\n'.join(lines)
+
 def get_history(chat_id):
     db = sqlite3.connect('files/arhive.db')
     cursor = db.cursor()

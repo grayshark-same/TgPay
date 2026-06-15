@@ -35,7 +35,7 @@ import asyncio
 import sqlite3
 import threading
 import sys
-import traceback    
+import traceback
 import textwrap
 import time
 import hmac
@@ -115,6 +115,16 @@ try:
     cursor.execute('ALTER TABLE users ADD COLUMN ref_count INTEGER')
 except sqlite3.OperationalError:
     pass
+cursor.execute('''
+    CREATE TABLE IF NOT EXISTS balance_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        amount REAL NOT NULL,
+        balance_after REAL NOT NULL,
+        description TEXT,
+        created_at TEXT NOT NULL
+    )
+''')
 db.commit()
 db.close()
 
@@ -131,6 +141,19 @@ arhive_cursor.execute('''
 ''')
 arhive_db.commit()
 arhive_db.close()
+
+donations_db = sqlite3.connect('files/donations.db')
+donations_db.cursor().execute('''
+    CREATE TABLE IF NOT EXISTS donations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        username TEXT,
+        amount REAL NOT NULL,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )
+''')
+donations_db.commit()
+donations_db.close()
 
 mods_db = sqlite3.connect('files/mods.db')
 mods_cursor = mods_db.cursor()
@@ -238,7 +261,7 @@ SEND_BUTTON, SEND_URL, CALC, CARD, SEND_IMAGE, SEND_RECEIPT, PAYOK_BUY, MERCHANT
 INVOICE_USER, INVOICE_PRICE, INVOICE_TOTAL, PROMOCODE, PROMOCODE_PRICE, PROMOCODE_USER, YOOMANY, NICEPAY, YOOMANY_REQUISITES,\
 YOOMANY_REQUISITES_LINK, YOOMANY_REQUISITES_EMAIL, YOOMANY_REQUISITES_PASSWORD, REF_PROCENT_CHANGE, REF_HRYVNIA_CHANGE, MESSAGE_TO_USER,\
 SEND_MESSAGE_TO_USER, ADMIN_DIALOG, TRANSITIONAL_LINK, SBP,CHOOSE_PLAN, CHOOSE_PERIOD, SBP_NUMBER, SBP_AMOUNT, CARD_NUMBER, CARD_AMOUNT, ACCEPTED_KEY, SEND_TARGET_ID,\
-SEND_TARGET_LIST, CRYPT_SUMM, CRYPT_TXID, RESET_REF_BALANCE, ESIM_MANUAL_SEND, SET_MODERATOR_ID_BALANS, GET_MODERATOR_ID_SUMM, SET_VALUE, PENALTY_AMOUNT_LEAVE, SEND_CONFIRM, WAIT_SVC_CONTACT, ESIM_QTY, SVC_GB_PHONE, PENALTY_ADD_COUNT, CASH_AMOUNT, CASH_COMMENT = range(78)
+SEND_TARGET_LIST, CRYPT_SUMM, CRYPT_TXID, RESET_REF_BALANCE, ESIM_MANUAL_SEND, SET_MODERATOR_ID_BALANS, GET_MODERATOR_ID_SUMM, SET_VALUE, PENALTY_AMOUNT_LEAVE, SEND_CONFIRM, WAIT_SVC_CONTACT, ESIM_QTY, SVC_GB_PHONE, PENALTY_ADD_COUNT, CASH_AMOUNT, CASH_COMMENT, DONATION_AMOUNT, DONATION_PHOTO = range(80)
 USER_STATE=defaultdict(lambda:START)
 USER_REQUEST_DATA = defaultdict(dict)
 
@@ -526,6 +549,7 @@ def start_markup(chat_id, text = ""):
         item10 = types.KeyboardButton('📋Правила')
         item11 = types.KeyboardButton('📲Подключение связи+')
         item12 = types.KeyboardButton('⚡️VPN⚡️')
+        markup.add(types.KeyboardButton('🎁 Получить награду'))
         markup.add(item1, item12, item2)
         markup.add(item6, item4, item5)
         markup.add(item11)
@@ -548,8 +572,7 @@ def start_markup(chat_id, text = ""):
             markup.add(types.KeyboardButton('🔗Реферальные значения'),
                        types.KeyboardButton('👨Написать человеку'),
                        types.KeyboardButton('💰Отчет по деньгам'))
-            markup.add(types.KeyboardButton('🖌Изменить баланс модератора'),
-                       types.KeyboardButton('📑Список пользоватилей'))
+            markup.add(types.KeyboardButton('📑Список пользоватилей'))
             markup.add(types.KeyboardButton('Добавить переходную ссылку'))
             markup.add(types.KeyboardButton('Баланс Благотворительности'))
             markup.add(types.KeyboardButton('💸 Аннулировать реф. баланс'))
@@ -874,6 +897,68 @@ def _process_svc_gb_order(call):
 
 
 @bot.message_handler(func=lambda message: get_state(message) == GET_ID_BALANS)
+def admin_balance_history_handler(message):
+    if message.text == '🚫 Отмена':
+        update_state(message, START)
+        bot.send_message(message.chat.id, 'Отменено', reply_markup=start_markup(message.chat.id))
+        return
+    try:
+        user_id = int(message.text)
+        hist = get_balance_history(user_id)
+        if hist == '':
+            bot.send_message(message.chat.id, f'💰 История баланса пользователя {user_id} пуста')
+        else:
+            bot.send_message(message.chat.id, f'💰 <b>История баланса {user_id} (последние 20):</b>\n\n{hist}', parse_mode='HTML')
+    except Exception as e:
+        bot.send_message(message.chat.id, f'❌ Ошибка: {e}')
+    update_state(message, START)
+
+
+@bot.message_handler(func=lambda message: get_state(message) == DONATION_AMOUNT)
+def donation_amount_handler(message):
+    chat_id = message.chat.id
+    if message.text == '🚫 Отмена':
+        update_state(message, START)
+        bot.send_message(chat_id, '❌ Отменено.', reply_markup=start_markup(chat_id))
+        return
+    text = message.text.replace(' ', '').replace(',', '.').replace('₽', '')
+    try:
+        amount = float(text)
+        if amount <= 0:
+            raise ValueError
+    except ValueError:
+        bot.send_message(chat_id, '❌ Введите корректную сумму:', reply_markup=start_markup(chat_id, text='🚫 Отмена'))
+        return
+    add_data('donation_amount', str(amount), chat_id)
+    update_state(message, DONATION_PHOTO)
+    bot.send_message(chat_id, '📎 Пришлите чек об оплате (фото):', reply_markup=start_markup(chat_id, text='🚫 Отмена'))
+
+
+@bot.message_handler(func=lambda message: get_state(message) == DONATION_PHOTO, content_types=['photo', 'text'])
+def donation_photo_handler(message):
+    chat_id = message.chat.id
+    if message.text == '🚫 Отмена':
+        update_state(message, START)
+        bot.send_message(chat_id, '❌ Отменено.', reply_markup=start_markup(chat_id))
+        return
+    if not message.photo:
+        bot.send_message(chat_id, '❌ Пожалуйста, отправьте фото чека:', reply_markup=start_markup(chat_id, text='🚫 Отмена'))
+        return
+    amount = get_par('donation_amount', chat_id)
+    username = message.chat.username or str(chat_id)
+    update_state(message, START)
+    bot.send_message(chat_id, '✅ Спасибо! Ваша заявка отправлена на проверку.', reply_markup=start_markup(chat_id))
+    admin_markup = types.InlineKeyboardMarkup(row_width=True)
+    admin_markup.add(
+        types.InlineKeyboardButton('✅ Подтвердить', callback_data=f'donation_accept:{chat_id}:{amount}'),
+        types.InlineKeyboardButton('❌ Отклонить', callback_data=f'donation_reject:{chat_id}'),
+    )
+    bot.send_photo(adminGroup,
+        photo=message.photo[-1].file_id,
+        caption=f'🎁 ПОЖЕРТВОВАНИЕ НА РАЗРАБОТКУ\n\nПользователь: @{username}\nid: {chat_id}\nСумма: {amount} ₽',
+        reply_markup=admin_markup)
+
+
 def get_id_balans(message):
     try:
         user_id = int(message.text)
@@ -5014,6 +5099,10 @@ id: {chat_id}
 
     elif text == "buyEsim":
         logging.info(f"[buyEsim] chat={chat_id}")
+        operator = get_par("EsimOperator", chat_id)
+        if operator in ("FranceUnlimited", "France35GB"):
+            bot.answer_callback_query(call.id, "⏳ Временно нет в наличии", show_alert=True)
+            return
         qty_markup = types.InlineKeyboardMarkup(row_width=3)
         qty_markup.add(
             types.InlineKeyboardButton("1", callback_data="esim_qty:1"),
@@ -5796,6 +5885,39 @@ id: {chat_id}
         else:
             for i in range(0, len(mess_text), 4096):
                 bot.send_message(call.message.chat.id, mess_text[i:i+4096], parse_mode='HTML')
+    elif text == 'balance_history':
+        mess_text = get_balance_history(call.message.chat.id)
+        if mess_text == '':
+            bot.send_message(call.message.chat.id, '💰 История баланса пуста')
+        else:
+            bot.send_message(call.message.chat.id, f'💰 <b>История баланса (последние 20 операций):</b>\n\n{mess_text}', parse_mode='HTML')
+
+    elif text.startswith('donation_accept:'):
+        _, user_id_s, amount_s = text.split(':')
+        user_id_d = int(user_id_s)
+        amount_d = float(amount_s)
+        _db = sqlite3.connect('files/donations.db', timeout=10)
+        _db.cursor().execute(
+            'INSERT INTO donations (user_id, username, amount) VALUES (?, ?, ?)',
+            (user_id_d, call.message.caption.split('@')[1].split('\n')[0] if '@' in (call.message.caption or '') else '', amount_d)
+        )
+        _db.commit()
+        _db.close()
+        bot.edit_message_caption(
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            caption=call.message.caption + f'\n\n✅ Подтверждено (@{call.from_user.username})'
+        )
+        bot.send_message(user_id_d, f'✅ <b>Ваше пожертвование подтверждено!</b>\n\n💰 Сумма: {amount_d} ₽\n\nСпасибо за поддержку разработки приложения! 🙏', parse_mode='HTML')
+
+    elif text.startswith('donation_reject:'):
+        user_id_d = int(text.split(':')[1])
+        bot.edit_message_caption(
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            caption=(call.message.caption or '') + f'\n\n❌ Отклонено (@{call.from_user.username})'
+        )
+        bot.send_message(user_id_d, '❌ Ваш чек не был подтверждён. Обратитесь в поддержку.', reply_markup=start_markup(user_id_d))
     elif text == 'start_dialog' or text == 'stop_dialog':
         id = call.message.text.split('id: ')[1].split('\n')[0]
         if text == 'start_dialog':
@@ -5840,6 +5962,9 @@ id: {chat_id}
     elif text == 'admin_balans_id':
         bot.send_message(call.message.chat.id, 'Пришлите ID пользователя', reply_markup = start_markup(call.message.chat.id, text='🚫 Отмена'))
         update_state(call.message, GET_ID_BALANS)
+    elif text == 'admin_balance_history_id':
+        msg = bot.send_message(call.message.chat.id, '💰 Введите ID пользователя для просмотра истории баланса:', reply_markup=start_markup(call.message.chat.id, text='🚫 Отмена'))
+        bot.register_next_step_handler(msg, admin_balance_history_handler)
     elif text == "resume_request":
         try:
             bot.delete_message(call.message.chat.id, call.message.message_id)
@@ -6636,6 +6761,7 @@ def get_text_messages(message):
         inline_markup.add(types.InlineKeyboardButton("🧮 Калькулятор", callback_data="calculator"))
         inline_markup.add(types.InlineKeyboardButton("Вывод средств", callback_data="withdraw_bal"))
         inline_markup.add(types.InlineKeyboardButton("История", callback_data="get_history"))
+        inline_markup.add(types.InlineKeyboardButton("💰 История баланса", callback_data="balance_history"))
         inline_markup.add(types.InlineKeyboardButton("Реферальная система", callback_data="ref_system"))
 
         bot.send_message(message.chat.id, get_cabinet(message.chat.id), parse_mode="Markdown", reply_markup= inline_markup)
@@ -6703,6 +6829,12 @@ def get_text_messages(message):
         bot.send_message(message.chat.id, 'Кому отправить?', reply_markup=inline_markup)
 
 
+    elif message.text == '🎁 Получить награду':
+        update_state(message, DONATION_AMOUNT)
+        bot.send_message(message.chat.id,
+            '🎁 <b>Получить награду</b>\n\nПришлите сумму которую вы пожертвовали на разработку приложения:',
+            parse_mode='HTML', reply_markup=start_markup(message.chat.id, text='🚫 Отмена'))
+
     elif message.text == "🚫 Отмена":
         markup = start_markup(message.chat.id)
         bot.send_message(message.chat.id, "Отменили ввод данных", reply_markup = markup)
@@ -6712,6 +6844,7 @@ def get_text_messages(message):
         inline_markup = types.InlineKeyboardMarkup(row_width=True)
         inline_markup.add(types.InlineKeyboardButton("Баланс по ID", callback_data="admin_balans_id"))
         inline_markup.add(types.InlineKeyboardButton("Баланс общий", callback_data="admin_balans_all"))
+        inline_markup.add(types.InlineKeyboardButton("💰 История баланса по ID", callback_data="admin_balance_history_id"))
         bot.send_message(message.chat.id, '💳Выберите способ оплаты:', reply_markup=inline_markup)
     elif message.text == "🧮Калькулятор":
         inline_markup = types.InlineKeyboardMarkup(row_width=True)
