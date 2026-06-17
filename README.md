@@ -1,133 +1,132 @@
 # TGPay
 
-Telegram-бот для приёма платежей, управления балансами и оказания услуг (пополнение мобильного, eSIM, VPN, GB-пакеты и др.).
+Telegram bot for payment processing, balance management, and digital services (mobile top-ups, eSIM, VPN, GB packages, etc.).
 
-## Стек
+## Stack
 
 - Python 3.10+
 - [pyTelegramBotAPI (telebot)](https://github.com/eternnoir/pyTelegramBotAPI)
-- SQLite (несколько баз, доступ через `sqlite3`)
-- Lava.ru Business API (приём карт и СБП, polling + webhook)
-- Cryptomus (крипто-платежи)
-- NicePay, PayOK, ЮMoney (дополнительные способы оплаты)
+- SQLite (multiple databases via `sqlite3`)
+- Lava.ru Business API (card + SBP payments, polling + webhook)
+- Cryptomus (crypto payments)
+- NicePay, PayOK, YooMoney (additional payment providers)
 
-## Структура файлов
+## File Structure
 
 ```
-bot.py          — основной файл: хендлеры, callback-логика, бизнес-правила
-help.py         — вспомогательные функции: балансы, архив, ранги, история
-texts.py        — статичные тексты сообщений
-penalties.py    — система штрафов модераторов
-cryptomus.py    — интеграция с Cryptomus
-nicepay.py      — интеграция с NicePay
-support_bot.py  — отдельный бот поддержки
-yomany_gmail.py — мониторинг ЮMoney через Gmail
+bot.py          — main file: handlers, callbacks, business logic
+help.py         — DB helpers: balances, archive, ranks, history
+texts.py        — static message templates
+penalties.py    — moderator penalty system
+cryptomus.py    — Cryptomus integration
+nicepay.py      — NicePay integration
+support_bot.py  — separate support bot
+yomany_gmail.py — YooMoney monitoring via Gmail
 
-files/          — SQLite базы данных (не в репо)
-  users.db      — пользователи, балансы, balance_log, подписки
-  arhive.db     — архив выполненных заявок
-  cards.db      — данные карт для выплат
-  penalties.db  — штрафы модераторов
-  donations.db  — пожертвования на разработку приложения
-  referrals.db  — реферальная система
-  mods.db       — балансы модераторов (UAH/USD)
+files/          — SQLite databases (not in repo)
+  users.db      — users, balances, balance_log, subscriptions
+  arhive.db     — completed order archive
+  cards.db      — card data for payouts
+  penalties.db  — moderator penalties
+  donations.db  — developer donations
+  referrals.db  — referral system
+  mods.db       — moderator balances (UAH/USD)
 
-esim.json           — конфиг операторов eSIM (цена, описание)
-promocode.json      — промокоды
-lifecell_gb.json    — пакеты GB Lifecell
-analytic_clicks_data.json — аналитика кликов по разделам
+esim.json           — eSIM operator config (price, description)
+promocode.json      — promo codes
+lifecell_gb.json    — Lifecell GB packages
+analytic_clicks_data.json — section click analytics
 ```
 
-## Переменные окружения
+## Environment Variables
 
-Создай файл `.env` в корне проекта:
+Create a `.env` file in the project root:
 
 ```env
-BOT_TOKEN=<токен бота от @BotFather>
-ADMIN_GROUP=<chat_id группы администраторов (отрицательный)>
-ARHIVE_GROUPS=<chat_id архивной группы (через запятую)>
+BOT_TOKEN=<token from @BotFather>
+ADMIN_GROUP=<admin group chat_id (negative)>
+ARHIVE_GROUPS=<archive group chat_id>
 ```
 
-> ⚠️ `.env` не коммитится в репо. Никогда не добавляй токены в код напрямую.
+> ⚠️ Never commit `.env` or hardcode tokens in source files.
 
-## Как запустить локально
+## Running Locally
 
 ```bash
-# 1. Клонировать и перейти в папку
-git clone https://github.com/sowaaaaa/tgpay
-cd tgpay
+# 1. Clone and enter the directory
+git clone https://github.com/grayshark-same/TgPay
+cd TgPay
 
-# 2. Создать виртуальное окружение
+# 2. Create a virtual environment
 python -m venv venv
 source venv/bin/activate  # Windows: venv\Scripts\activate
 
-# 3. Установить зависимости
+# 3. Install dependencies
 pip install -r librarise.txt
 
-# 4. Создать .env (см. выше)
+# 4. Create .env (see above)
 
-# 5. Создать папку для БД
+# 5. Create the database directory
 mkdir -p files
 
-# 6. Запустить
+# 6. Run
 python bot.py
 ```
 
-При первом запуске все SQLite-таблицы создаются автоматически.
+All SQLite tables are created automatically on first run.
 
-## Деплой на сервер
+## Deployment
 
-Бот развёрнут на `92.51.37.63`. Тестовый бот — `/root/test_bot/`, продакшен — `/root/bot/`.
+The bot runs on a remote server. Test bot lives at `/root/test_bot/`, production at `/root/bot/`.
 
-Деплой с тестового на прод через `deploy.sh` (запускается на сервере):
+Deploy from test to production via `deploy.sh` (run on the server):
 
 ```bash
 bash /root/test_bot/deploy.sh
 ```
 
-Скрипт делает `rsync` (без БД и `.env`) и перезапускает `bot.service`.
+The script rsyncs files (excluding databases and `.env`) and restarts `bot.service`.
 
-## Архитектура балансов
+## Balance Architecture
 
-- Баланс пользователя хранится в `users.db → users.balans` (рубли, float)
-- Все изменения баланса пишутся в `balance_log` (user_id, amount, balance_after, description, created_at)
-- Функция `add_deposit(id, summ, description)` — единая точка изменения баланса
-- Исключения: `withdraw_balance` (вывод средств) и `update_balance` — тоже пишут в `balance_log`
+- User balance is stored in `users.db → users.balans` (RUB, float)
+- Every balance change is written to `balance_log` (user_id, amount, balance_after, description, created_at)
+- `add_deposit(id, summ, description)` is the single entry point for all balance changes
+- `withdraw_balance` and `update_balance` also write to `balance_log`
 
-## Реферальная система
+## Referral System
 
-- При регистрации пользователь привязывается к рефереру через `ref_data.json` / `referrals.db`
-- При пополнении баланса реферером начисляется процент рефереру (настраивается в боте)
-- Накопленный реф. баланс можно вывести через профиль → "Реферальная система"
+- Users are linked to a referrer at registration via `referrals.db`
+- A percentage of each top-up is credited to the referrer (configurable in `ref_data.json`)
+- Accumulated referral balance can be withdrawn via the profile menu
 
-## Платежи через Lava
+## Lava Payments
 
-1. Создаётся инвойс (`/business/invoice/create`) — пользователь получает ссылку
-2. Бот запускает polling в отдельном потоке (`poll_lava_payment`) — проверяет статус каждые 5 сек до 1 часа
-3. При статусе `paid` — зачисляется баланс через `add_deposit`
-4. Альтернативно: webhook `/business/invoice/webhook` — принимается через отдельный HTTP-сервер (если настроен)
+1. An invoice is created via `/business/invoice/create` — user receives a payment link
+2. The bot polls payment status in a background thread (`poll_lava_payment`) every 5 seconds for up to 1 hour
+3. On `paid` status — balance is credited via `add_deposit`
 
-Подпись запросов: HMAC-SHA256 от JSON-тела с `SECRET_KEY`.
+Requests are signed with HMAC-SHA256 using `SECRET_KEY`.
 
-## Ранги пользователей
+## User Ranks
 
-По потраченной сумме (`total_spent`):
+By total amount spent (`total_spent`):
 
-| Ранг | Сумма |
-|------|-------|
+| Rank | Amount |
+|------|--------|
 | ❌ | 0 ₽ |
-| ✅ | до 1 000 ₽ |
-| 💎 | до 10 000 ₽ |
-| 🐳 | до 100 000 ₽ |
-| 🕶 | 100 000+ ₽ |
+| ✅ | up to 1,000 ₽ |
+| 💎 | up to 10,000 ₽ |
+| 🐳 | up to 100,000 ₽ |
+| 🕶 | 100,000+ ₽ |
 
-По пожертвованиям (`donations.db`):
+By donation amount (`donations.db`):
 
-| Ранг | Сумма |
-|------|-------|
+| Rank | Amount |
+|------|--------|
 | — | < 500 ₽ |
-| tg-emoji 5364209244109282901 | 500–999 ₽ |
-| tg-emoji 5361664617720325706 | 1 000–2 999 ₽ |
-| tg-emoji 5361701438474953213 | 3 000–4 999 ₽ |
-| tg-emoji 5364119608141816446 | 5 000–9 999 ₽ |
-| tg-emoji 5363918225715243425 | 10 000+ ₽ |
+| 👑 (tier 1) | 500–999 ₽ |
+| 👑 (tier 2) | 1,000–2,999 ₽ |
+| 👑 (tier 3) | 3,000–4,999 ₽ |
+| 👑 (tier 4) | 5,000–9,999 ₽ |
+| 👑 (tier 5) | 10,000+ ₽ |
