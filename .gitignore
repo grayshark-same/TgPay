@@ -19,6 +19,9 @@ files/*.db
 files/*.db-shm
 files/*.db-wal
 
+# eSIM inventory (sensitive customer data)
+eSIM/
+
 # Receipts
 receipt_*.jpg
 receipt_*.pdf

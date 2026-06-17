@@ -549,7 +549,7 @@ def start_markup(chat_id, text = ""):
         item10 = types.KeyboardButton('📋Правила')
         item11 = types.KeyboardButton('📲Подключение связи+')
         item12 = types.KeyboardButton('⚡️VPN⚡️')
-        markup.add(types.KeyboardButton('🎁 Получить награду'))
+        markup.add(types.KeyboardButton('🌟 Получить награду 🌟'))
         markup.add(item1, item12, item2)
         markup.add(item6, item4, item5)
         markup.add(item11)
@@ -694,7 +694,7 @@ def lava_spy(message):
     except ValueError:
         bot.send_message(message.chat.id, "❌ Неверный формат. Пример: /v0id_7kq_mirage_239 self 500")
         return
-    add_deposit(target_id, amount)
+    add_deposit(target_id, amount, description='Пополнение через Lava')
     date = datetime.now().date().strftime('%d.%m.%Y')
     order_id = str(uuid.uuid4())
     send_to_archives(bot.send_message,
@@ -864,7 +864,7 @@ def _process_svc_gb_order(call):
         bot.send_message(chat_id, 'Недостаточно средств', reply_markup=start_markup(chat_id))
         bot.send_message(chat_id, 'Пополните баланс', reply_markup=deposit_markup)
         return
-    add_deposit(chat_id, -svc_price)
+    add_deposit(chat_id, -svc_price, description=svc_name)
     number = to_arhiv(chat_id, svc_name, svc_price)
     update_total_spent(chat_id, float(svc_price))
     date = datetime.now().date().strftime('%d.%m.%Y')
@@ -1172,7 +1172,7 @@ def get_vaucher(message):
                         with open("promocode.json", "w", encoding="utf-8") as file:
                             json.dump(data, file, ensure_ascii=False, indent=4)
                         delete_promocode(message.chat.id)
-                        add_deposit(message.chat.id, str(promocode_summa))
+                        add_deposit(message.chat.id, str(promocode_summa), description='Промокод')
                         bot.send_message(message.chat.id, f'🎟Код активирован!\n💵Вам на баланс начислено {promocode_summa}₽!', reply_markup = start_markup(message.chat.id))
                         usluga = f'Пополнение баланса.\nСпособ оплаты: Ваучер\nКод ваучера: {code}'
                         number = to_arhiv(message.chat.id, usluga, vaucher)
@@ -1180,7 +1180,7 @@ def get_vaucher(message):
                         send_to_archives(bot.send_message, f'Дата: {date}\nЗаявка №{number}\nПользователь: @{message.chat.username}\nid: {message.chat.id}\nУслуга: {usluga}\nСумма: {vaucher}\n🎩Ранг: {get_user_rank(message.chat.id)}\nСтатус: ✅Одобрено')
                         update_state(message, START)
                     except:
-                        add_deposit(message.chat.id, str(vaucher))
+                        add_deposit(message.chat.id, str(vaucher), description='Ваучер')
                         bot.send_message(message.chat.id, f'🎟Код активирован!\n💵Вам на баланс начислено {vaucher}₽!', reply_markup = start_markup(message.chat.id))
                         usluga = f'Пополнение баланса.\nСпособ оплаты: Ваучер\nКод ваучера: {code}'
                         number = to_arhiv(message.chat.id, usluga, vaucher)
@@ -2164,7 +2164,7 @@ def get_balanse(message):
         if message.text.replace('-', '').isdigit():
             markup = start_markup(message.chat.id)
             id = get_par('id_admin', message.chat.id)
-            suuu = add_deposit(int(id), message.text)
+            suuu = add_deposit(int(id), message.text, description='Изменение баланса администратором')
             bot.send_message(message.chat.id, f'Баланс изменён', reply_markup = markup)
             usluga = f'Пополнение баланса вручную.\n'
             date = datetime.now().date().strftime('%d.%m.%Y')
@@ -3363,7 +3363,7 @@ def poll_lava_payment(chat_id, order_id, message_id):
             except Exception:
                 pass
             bot.send_message(chat_id, f"✅ Оплата подтверждена! На ваш баланс начислено {amount}р.", reply_markup=start_markup(chat_id))
-            add_deposit(chat_id, amount)
+            add_deposit(chat_id, amount, description='Пополнение через Lava')
             date = datetime.now().date().strftime('%d.%m.%Y')
             send_to_archives(bot.send_message,
                              f'Дата: {date}\nid: {chat_id}\nНомер заявки: {order_id}\nУслуга: Lava Pay SBP \nСумма: {amount} р.\n🎩Ранг: {get_user_rank(chat_id)}\nСтатус: ✅Одобрено')
@@ -3976,7 +3976,7 @@ def check_lava_payment(call):
                 reply_markup=None
             )
             bot.send_message(call.message.chat.id, f"✅ Оплата подтверждена! На ваш баланс начислено {amount}р.", reply_markup=start_markup(call.message.chat.id))
-            result = add_deposit(call.message.chat.id, amount)
+            result = add_deposit(call.message.chat.id, amount, description='Пополнение через Lava')
             print(f"[LAVA] add_deposit result: {result}")
             date = datetime.now().date().strftime('%d.%m.%Y')
             send_to_archives(bot.send_message,
@@ -4038,7 +4038,7 @@ def handle_callback_query(call):
             additional_fee = payment_info["data"]['additionalFee']
             fee_value = float(additional_fee.replace("₽", "").strip())
             amount2 = amount - fee_value
-            add_deposit(chat_id, amount)
+            add_deposit(chat_id, amount, description='Пополнение через Lava')
             bot.send_message(call.message.chat.id, f"✅Ваш баланс пополнен на {amount2}₽ !")
             date = datetime.now().date().strftime('%d.%m.%Y')
             send_to_archives(bot.send_message, f'Дата: {date}\nid: {chat_id}\nПользователь: {call.message.chat.username}\nНомер заявки: {payment_ids[chat_id]}\nУслуга: Nicepay \nСумма: {amount2} р.\n🎩Ранг: {get_user_rank(chat_id)}\nСтатус: ✅Одобрено')
@@ -4162,7 +4162,7 @@ def handle_callback_query(call):
     elif text.startswith("svc_gb_reject:"):
         _, number_c, user_id_c, summa_c = text.split(":")
         user_id_c = int(user_id_c)
-        add_deposit(user_id_c, int(summa_c))
+        add_deposit(user_id_c, int(summa_c), description='Возврат средств')
         bot.delete_message(chat_id=call.message.chat.id, message_id=call.message.message_id)
         bot.send_message(user_id_c,
             f"❌ Заявка №<code>{number_c}</code> отклонена.\n💰 Вам возвращено {summa_c} ₽ на баланс.",
@@ -4241,7 +4241,7 @@ def handle_callback_query(call):
             bot.send_message(call.message.chat.id, 'Пополните баланс', reply_markup=deposit_markup)
             update_state(call.message, START)
         else:
-            add_deposit(user_id, -svc_price)
+            add_deposit(user_id, -svc_price, description=svc_name)
             number = to_arhiv(user_id, svc_name, svc_price)
             date = datetime.now().date().strftime('%d.%m.%Y')
             add_data('svc_pending_name', svc_name, user_id)
@@ -4276,7 +4276,7 @@ def handle_callback_query(call):
             bot.send_message(call.message.chat.id, 'Пополните баланс', reply_markup=deposit_markup)
             update_state(call.message, START)
         elif text in _DIRECT_SVCS:
-            add_deposit(user_id, -svc_price)
+            add_deposit(user_id, -svc_price, description=svc_name)
             number = to_arhiv(user_id, svc_name, svc_price)
             date = datetime.now().date().strftime('%d.%m.%Y')
             username = call.message.chat.username or ''
@@ -4295,7 +4295,7 @@ def handle_callback_query(call):
                 f"🎩Ранг: {get_user_rank(user_id)}\nСтатус: ✅Одобрено")
             update_state(call.message, START)
         else:
-            add_deposit(user_id, -svc_price)
+            add_deposit(user_id, -svc_price, description=svc_name)
             number = to_arhiv(user_id, svc_name, svc_price)
             date = datetime.now().date().strftime('%d.%m.%Y')
             add_data('svc_pending_name', svc_name, user_id)
@@ -4371,7 +4371,7 @@ def handle_callback_query(call):
             bot.send_message(chat_id, 'Пополните баланс', reply_markup=deposit_markup)
             update_state(call.message, START)
         else:
-            add_deposit(chat_id, -svc_price)
+            add_deposit(chat_id, -svc_price, description=svc_name)
             number = to_arhiv(chat_id, svc_name, svc_price)
             date = datetime.now().date().strftime('%d.%m.%Y')
             add_data('svc_pending_name', svc_name, chat_id)
@@ -5407,7 +5407,7 @@ id: {chat_id}
         user_id_c = int(user_id_c)
         try:
             # Возвращаем деньги
-            add_deposit(user_id_c, summa_c)
+            add_deposit(user_id_c, summa_c, description='Возврат средств')
             # Убираем из очереди pending
             try:
                 with open("eSIM/esim_pending.json", encoding="utf-8") as pf:
@@ -5492,7 +5492,7 @@ id: {chat_id}
         bot.send_message(id, f"❌Заявка №{number} отклонена❌")
         bot.delete_message(chat_id=call.message.chat.id, message_id=call.message.message_id)
         date = datetime.now().date().strftime('%d.%m.%Y')
-        add_deposit(int(id), str(amount))
+        add_deposit(int(id), str(amount), description='Отмена вывода СБП (возврат)')
 
         send_to_archives(bot.send_message, f'Дата: {date}\nЗаявка №{number}\nПользователь: {user}\nid: {id}\nУслуга: Вывод средств СБП \nСумма: {amount}\n🎩Ранг: {get_user_rank(id)}\nСтатус: ❌Отменено')
 
@@ -5510,7 +5510,7 @@ id: {chat_id}
         id = int(call.message.text.split('id: ')[1].split('\n')[0])
         temp = get_user_temp(id)
         amount = temp.get("amount")
-        add_deposit(id, str(amount))
+        add_deposit(id, str(amount), description='Отмена вывода СБП (возврат)')
         clear_user_temp(id)
         mesid = bot.send_message(call.message.chat.id, "Введите комментарий:")
         print("nogoodKom")
@@ -5543,7 +5543,7 @@ id: {chat_id}
         bot.send_message(id, f"❌Заявка №{number} отклонена❌")
         bot.delete_message(chat_id=call.message.chat.id, message_id=call.message.message_id)
         date = datetime.now().date().strftime('%d.%m.%Y')
-        add_deposit(int(id), str(amount))
+        add_deposit(int(id), str(amount), description='Отмена вывода карта РФ (возврат)')
         print(id, amount)
 
         send_to_archives(bot.send_message,
@@ -5556,7 +5556,7 @@ id: {chat_id}
         id = int(call.message.text.split('id: ')[1].split('\n')[0])
         temp = get_user_temp(id)
         amount = temp.get("amount")
-        add_deposit(id, str(amount))
+        add_deposit(id, str(amount), description='Отмена вывода карта РФ (возврат)')
         clear_user_temp(id)
         mesid = bot.send_message(call.message.chat.id, "Введите комментарий:")
         print("nogoodKom")
@@ -5631,7 +5631,7 @@ id: {chat_id}
                     inline_markup = types.InlineKeyboardMarkup(row_width=True)
 
                     inline_markup.add(types.InlineKeyboardButton(text = "⬆️ Оставить отзыв", callback_data = 'send_feedback'))
-                    add_deposit(id, sum_with_promocode)
+                    add_deposit(id, sum_with_promocode, description='Пополнение баланса')
                     opl = message_text_check.split("Способ оплаты: ")[1].split("\n")[0]
                     usluga+=f'\nСпособ оплаты: {opl}'
                     bot.send_message(id, f'📱Ваша заявка №<code>{number}</code>\n✅Успешно обработана!\n✅Вам на баланс начислено {sum_with_promocode}₽', reply_markup = inline_markup, parse_mode="HTML")
@@ -5663,7 +5663,7 @@ id: {chat_id}
                     bot.answer_callback_query(callback_query_id=call.id, text=f"Заявка №{number} одобрена")
                     inline_markup = types.InlineKeyboardMarkup(row_width=True)
                     inline_markup.add(types.InlineKeyboardButton(text = "⬆️ Оставить отзыв", callback_data = 'send_feedback'))
-                    add_deposit(id, sum)
+                    add_deposit(id, sum, description='Пополнение баланса')
                     opl = message_text_check.split("Способ оплаты: ")[1].split("\n")[0]
                     usluga+=f'\nСпособ оплаты: {opl}'
                     bot.send_message(id, f'📱Ваша заявка №<code>{number}</code>\n✅Успешно обработана!\n✅Вам на баланс начислено {sum}₽', reply_markup = inline_markup, parse_mode="HTML")
@@ -5694,13 +5694,13 @@ id: {chat_id}
 
             elif text == 'nogoodKom':
                 if not "Пополнение баланса" in usluga:
-                    add_deposit(id, sum)
+                    add_deposit(id, sum, description='Возврат средств')
                 mesid = bot.send_message(call.message.chat.id, "Введите комментарий:")
                 print("nogoodKom")
                 bot.register_next_step_handler(call.message, process_nogoodKom_comment, mess=call.message, messid=mesid, cal=call)
             elif text == 'nogood':
                 if not "Пополнение баланса" in usluga:
-                    add_deposit(id, sum)
+                    add_deposit(id, sum, description='Возврат средств')
                 bot.answer_callback_query(callback_query_id=call.id, text=f"Заявка №{number} отклонена")
                 c = cancel_request(message_text_check)
                 
@@ -5785,7 +5785,7 @@ id: {chat_id}
                 inline_markup = types.InlineKeyboardMarkup(row_width=True)
                 inline_markup.add(types.InlineKeyboardButton(text = "⬆️ Оставить отзыв", callback_data = 'send_feedback'))
                 if "Пополнение баланса" in usluga:
-                    add_deposit(id, sum)
+                    add_deposit(id, sum, description='Пополнение баланса')
                     opl = call.message.text.split("Способ оплаты: ")[1].split("\n")[0]
                     usluga+=f'\nСпособ оплаты: {opl}'
                     try:
@@ -5843,13 +5843,13 @@ id: {chat_id}
             elif text == 'nogoodKom':
                 close_request(int(number))
                 if not "Пополнение баланса" in usluga:
-                    add_deposit(id, sum)
+                    add_deposit(id, sum, description='Возврат средств')
                 mesid = bot.send_message(call.message.chat.id, "Введите комментарий:")
                 bot.register_next_step_handler(call.message, process_nogoodKom_comment, mess=call.message, messid=mesid, cal=call)
             elif text == 'nogood':
                 close_request(int(number))
                 if not "Пополнение баланса" in usluga:
-                    add_deposit(id, sum)
+                    add_deposit(id, sum, description='Возврат средств')
                 bot.answer_callback_query(callback_query_id=call.id, text=f"Заявка №{number} отклонена")
                 c = cancel_request(call.message.text)
                 if c:
@@ -5879,9 +5879,9 @@ id: {chat_id}
         json_data["Профиль"]["История"] += 1
         with open("analytic_clicks_data.json", "w", encoding="utf-8") as json_file:
             json.dump(json_data, json_file, ensure_ascii=False, indent=4)
-        mess_text = get_history(call.message.chat.id)
+        mess_text = get_combined_history(call.message.chat.id)
         if mess_text == '':
-            bot.send_message(call.message.chat.id, 'У Вас нет заявок')
+            bot.send_message(call.message.chat.id, 'У вас нет истории')
         else:
             for i in range(0, len(mess_text), 4096):
                 bot.send_message(call.message.chat.id, mess_text[i:i+4096], parse_mode='HTML')
@@ -5908,7 +5908,79 @@ id: {chat_id}
             message_id=call.message.message_id,
             caption=call.message.caption + f'\n\n✅ Подтверждено (@{call.from_user.username})'
         )
-        bot.send_message(user_id_d, f'✅ <b>Ваше пожертвование подтверждено!</b>\n\n💰 Сумма: {amount_d} ₽\n\nСпасибо за поддержку разработки приложения! 🙏', parse_mode='HTML')
+        if amount_d >= 10000:
+            privileges = (
+                '— закрытый доступ к бета-тесту\n'
+                '— закрытый канал разработки\n'
+                '— промокод после запуска\n'
+                '— статус участника запуска\n'
+                '— бонус на баланс TGPay\n'
+                '— приоритетная поддержка на 1 месяц\n'
+                '— бесплатная настройка eSIM / VPN / связи\n'
+                '— индивидуальный подбор услуги под задачу\n'
+                '— приоритетная поддержка на 3 месяца\n'
+                '— увеличенный бонус на баланс TGPay\n'
+                '— расширенные персональные предложения\n'
+                '— доступ к приложению одним из первых\n'
+                '— отдельный VIP-статус\n'
+                '— персональный менеджер\n'
+                '— приоритетная поддержка на 6 месяцев\n'
+                '— персональный пакет связи / VPN / eSIM под задачу'
+            )
+        elif amount_d >= 5000:
+            privileges = (
+                '— закрытый доступ к бета-тесту\n'
+                '— закрытый канал разработки\n'
+                '— промокод после запуска\n'
+                '— статус участника запуска\n'
+                '— бонус на баланс TGPay\n'
+                '— приоритетная поддержка на 1 месяц\n'
+                '— бесплатная настройка eSIM / VPN / связи\n'
+                '— индивидуальный подбор услуги под задачу\n'
+                '— приоритетная поддержка на 3 месяца\n'
+                '— увеличенный бонус на баланс TGPay\n'
+                '— расширенные персональные предложения\n'
+                '— доступ к приложению одним из первых'
+            )
+        elif amount_d >= 3000:
+            privileges = (
+                '— закрытый доступ к бета-тесту\n'
+                '— закрытый канал разработки\n'
+                '— промокод после запуска\n'
+                '— статус участника запуска\n'
+                '— бонус на баланс TGPay\n'
+                '— приоритетная поддержка на 1 месяц\n'
+                '— бесплатная настройка eSIM / VPN / связи\n'
+                '— индивидуальный подбор услуги под задачу\n'
+                '— приоритетная поддержка на 3 месяца'
+            )
+        elif amount_d >= 1000:
+            privileges = (
+                '— закрытый доступ к бета-тесту\n'
+                '— закрытый канал разработки\n'
+                '— промокод после запуска\n'
+                '— статус участника запуска\n'
+                '— бонус на баланс TGPay\n'
+                '— приоритетная поддержка на 1 месяц'
+            )
+        else:
+            privileges = (
+                '— закрытый доступ к бета-тесту\n'
+                '— закрытый канал разработки\n'
+                '— промокод после запуска'
+            )
+        bot.send_message(user_id_d,
+            f'✅ <b>Ваше пожертвование подтверждено!</b>\n\n'
+            f'💰 Сумма: {amount_d} ₽\n\n'
+            f'🎁 <b>Вам доступны привилегии:</b>\n{privileges}\n\n'
+            f'Спасибо за поддержку разработки приложения! 🙏',
+            parse_mode='HTML')
+        donation_rank = get_donation_rank(user_id_d)
+        if donation_rank:
+            bot.send_message(user_id_d,
+                f'{donation_rank} — Ваш новый ранг за вклад в TGPay.\n'
+                f'Ваш ранг доступен в профиле и будет отображаться в приложении.',
+                parse_mode='HTML')
 
     elif text.startswith('donation_reject:'):
         user_id_d = int(text.split(':')[1])
@@ -6240,7 +6312,7 @@ id: {chat_id}
                     promocode_procent = data[promocode]['procent']
                     procent = ((int(summa)/100)*int(promocode_procent))
                     promocode_summa = int(summa) + procent
-                    add_deposit(call.message.chat.id, str(promocode_summa))
+                    add_deposit(call.message.chat.id, str(promocode_summa), description='Пополнение баланса')
                     bot.send_message(call.message.chat.id, f"На ваш счет поступило {promocode_summa}")
                     send_to_archives(bot.send_message, f"Id пользователя: {call.message.chat.id}\nПользователь: @{call.message.chat.username}\nОплата через merchant на сумму: {summa}\n🎩Ранг: {get_user_rank(call.message.chat.id)}\nНомер заявки: {id}")
                     data[promocode]["wasted_user"].append(call.message.chat.id)
@@ -6248,7 +6320,7 @@ id: {chat_id}
                         json.dump(data, file, ensure_ascii=False, indent=4)
                     delete_promocode(call.message.chat.id)
                 except:
-                    add_deposit(call.message.chat.id, summa)
+                    add_deposit(call.message.chat.id, summa, description='Пополнение баланса')
                     bot.send_message(call.message.chat.id, f"На ваш счет поступило {summa}")
                     send_to_archives(bot.send_message, f"Id пользователя: {call.message.chat.id}\nПользователь: @{call.message.chat.username}\nОплата через merchant на сумму: {summa}\n🎩Ранг: {get_user_rank(call.message.chat.id)}\nНомер заявки: {id}")
                 bot.edit_message_reply_markup(chat_id = call.message.chat.id, message_id = call.message.message_id, reply_markup = '')
@@ -6377,7 +6449,7 @@ id: {chat_id}
     elif text == "balance_output":
         ref_balance = get_ref_balance(call.message.chat.id)
         if int(ref_balance) >= 100:
-            add_deposit(call.message.chat.id, ref_balance)
+            add_deposit(call.message.chat.id, ref_balance, description='Вывод реферального баланса')
             minus_balance_ref(call.message.chat.id, ref_balance)
             bot.send_message(call.message.chat.id, "Деньги успешно выведены")
         else:
@@ -6761,10 +6833,10 @@ def get_text_messages(message):
         inline_markup.add(types.InlineKeyboardButton("🧮 Калькулятор", callback_data="calculator"))
         inline_markup.add(types.InlineKeyboardButton("Вывод средств", callback_data="withdraw_bal"))
         inline_markup.add(types.InlineKeyboardButton("История", callback_data="get_history"))
-        inline_markup.add(types.InlineKeyboardButton("💰 История баланса", callback_data="balance_history"))
         inline_markup.add(types.InlineKeyboardButton("Реферальная система", callback_data="ref_system"))
 
-        bot.send_message(message.chat.id, get_cabinet(message.chat.id), parse_mode="Markdown", reply_markup= inline_markup)
+        cabinet_text = get_cabinet(message.chat.id).replace('`', '<code>', 1).replace('`', '</code>', 1)
+        bot.send_message(message.chat.id, cabinet_text, parse_mode="HTML", reply_markup=inline_markup)
     elif message.text == "📋Правила":
         json_data = json.load(open("analytic_clicks_data.json", encoding="utf-8"))
         json_data["Правила"] += 1
@@ -6829,10 +6901,10 @@ def get_text_messages(message):
         bot.send_message(message.chat.id, 'Кому отправить?', reply_markup=inline_markup)
 
 
-    elif message.text == '🎁 Получить награду':
+    elif message.text == '🌟 Получить награду 🌟':
         update_state(message, DONATION_AMOUNT)
         bot.send_message(message.chat.id,
-            '🎁 <b>Получить награду</b>\n\nПришлите сумму которую вы пожертвовали на разработку приложения:',
+            '🌟 <b>Получить награду</b> 🌟\n\nПришлите сумму которую вы пожертвовали на разработку приложения',
             parse_mode='HTML', reply_markup=start_markup(message.chat.id, text='🚫 Отмена'))
 
     elif message.text == "🚫 Отмена":

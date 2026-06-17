@@ -241,6 +241,11 @@ def withdraw_balance(id, amount):
             "UPDATE users SET balans = ? WHERE id = ?",
             (new_balance, id)
         )
+        now = datetime.now().strftime('%d.%m.%Y %H:%M:%S')
+        cursor.execute(
+            'INSERT INTO balance_log (user_id, amount, balance_after, description, created_at) VALUES (?, ?, ?, ?, ?)',
+            (id, -amount, new_balance, 'Вывод средств', now)
+        )
         db.commit()
         db.close()
         return "success"
@@ -526,21 +531,47 @@ def get_total_spent(user_id):
     row = cursor.fetchone()
     conn.close()
     return row[0] if row and row[0] is not None else 0
+def get_donation_rank(user_id):
+    try:
+        db = sqlite3.connect('files/donations.db')
+        cursor = db.cursor()
+        cursor.execute('SELECT COALESCE(SUM(amount), 0) FROM donations WHERE user_id = ?', (user_id,))
+        total = cursor.fetchone()[0]
+        db.close()
+    except Exception:
+        return ''
+    if total < 500:
+        return ''
+    elif total < 1000:
+        return '<tg-emoji emoji-id="5364209244109282901">👑</tg-emoji>'
+    elif total < 3000:
+        return '<tg-emoji emoji-id="5361664617720325706">👑</tg-emoji>'
+    elif total < 5000:
+        return '<tg-emoji emoji-id="5361701438474953213">👑</tg-emoji>'
+    elif total < 10000:
+        return '<tg-emoji emoji-id="5364119608141816446">👑</tg-emoji>'
+    else:
+        return '<tg-emoji emoji-id="5363918225715243425">👑</tg-emoji>'
+
 def get_user_rank(user_id):
     total = get_total_spent(user_id)
     print(user_id)
     if str(user_id) == "7131879634":
         return "⚙️🛠️"
     if total == 0:
-        return "❌"
+        spent_rank = "❌"
     elif total <= 1000:
-        return "✅"
+        spent_rank = "✅"
     elif total <= 10000:
-        return "💎"
+        spent_rank = "💎"
     elif total <= 100000:
-        return "🐳"
+        spent_rank = "🐳"
     else:
-        return "🕶"
+        spent_rank = "🕶"
+    donation_rank = get_donation_rank(user_id)
+    if donation_rank:
+        return f"{spent_rank} {donation_rank}"
+    return spent_rank
 def update_total_spent(user_id, summ):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
@@ -651,6 +682,11 @@ def update_balance(chat_id, amount):
     if data is not None:
         new_balance = data[0] + amount
         cursor.execute('UPDATE users SET balans = ? WHERE id = ?', (new_balance, chat_id))
+        now = datetime.now().strftime('%d.%m.%Y %H:%M:%S')
+        cursor.execute(
+            'INSERT INTO balance_log (user_id, amount, balance_after, description, created_at) VALUES (?, ?, ?, ?, ?)',
+            (chat_id, amount, new_balance, 'Изменение баланса', now)
+        )
         db.commit()
         db.close()
         return f'Баланс обновлен: {new_balance}₽'
@@ -663,12 +699,15 @@ def get_cabinet(chat_id):
     data = cursor.fetchone()
     if data:
         db.close()
-        # promo_code = data[2] if data[2] is not None else "Нет"
+        spent_rank = get_user_rank(chat_id)
+        donation_rank = get_donation_rank(chat_id)
+        donation_line = f'{donation_rank}\n' if donation_rank else ''
+        rank_line = f'\n🎖 Ранг: {spent_rank}'
         if data[2]:
-            kabinet = f"""🖥 Кабинет\n🆔 `{chat_id}`\n💵Баланс: {data[1]}₽\n⏱Дата регистрации: {data[0]}\nДействующий промокод: {data[2]}"""
+            kabinet = f"""{rank_line}\n🖥 Кабинет\n🆔 `{chat_id}`\n💵Баланс: {data[1]}₽\n⏱Дата регистрации: {data[0]}\nДействующий промокод: {data[2]}"""
             return kabinet
         else:
-            kabinet = f"""🖥 Кабинет\n🆔 `{chat_id}`\n💵Баланс: {data[1]}₽\n⏱Дата регистрации: {data[0]}"""
+            kabinet = f"""{rank_line}\n🖥 Кабинет\n🆔 `{chat_id}`\n💵Баланс: {data[1]}₽\n⏱Дата регистрации: {data[0]}"""
             return kabinet
     else:
         regestry(chat_id)
@@ -676,7 +715,8 @@ def get_cabinet(chat_id):
         data = cursor.fetchone()
         if data:
             db.close()
-            kabinet = f"""🖥 Кабинет\n🆔 `{chat_id}`\n💵Баланс: {data[1]}₽\n⏱Дата регистрации: {data[0]}"""
+            spent_rank = get_user_rank(chat_id)
+            kabinet = f"""🖥 Кабинет\n🆔 `{chat_id}`\n💵Баланс: {data[1]}₽\n⏱Дата регистрации: {data[0]}\n🎖 Ранг: {spent_rank}"""
             return kabinet
             
 #Отзыв в базу
@@ -808,7 +848,7 @@ def update_balanse(chat_id, key):
     return False
 
 #Пополнение баланса
-def add_deposit(id, summ):
+def add_deposit(id, summ, description=None):
     update_last_activity(id)
     if str(summ).replace('.', '').replace('-', '').isdigit():
         db = sqlite3.connect('files/users.db')
@@ -820,9 +860,11 @@ def add_deposit(id, summ):
             value=float(summ)+data[0]
             cursor.execute('UPDATE users SET balans = ? WHERE id = ?', (value, id))
             now = datetime.now().strftime('%d.%m.%Y %H:%M:%S')
+            if description is None:
+                description = 'Пополнение' if summ >= 0 else 'Списание за услугу'
             cursor.execute(
-                'INSERT INTO balance_log (user_id, amount, balance_after, created_at) VALUES (?, ?, ?, ?)',
-                (id, summ, value, now)
+                'INSERT INTO balance_log (user_id, amount, balance_after, description, created_at) VALUES (?, ?, ?, ?, ?)',
+                (id, summ, value, description, now)
             )
             db.commit()
             db.close()
@@ -840,7 +882,7 @@ def change_deposit(id, summ):
         cursor.execute(f'SELECT balans FROM users WHERE id = ?', (id,))
         data = cursor.fetchone()
         if data:
-            value=float(summ)
+            value = float(summ)
             cursor.execute('UPDATE users SET balans = ? WHERE id = ?', (value, id))
             db.commit()
             db.close()
@@ -859,7 +901,7 @@ def to_arhiv(chat_id, usluga, summ):
 
     db = sqlite3.connect('files/arhive.db')
     cursor = db.cursor()
-    date = datetime.now().date().strftime('%d.%m.%Y')
+    date = datetime.now().strftime('%d.%m.%Y %H:%M:%S')
     number = file_data['count']
     if number:
         id = number+1
@@ -925,6 +967,53 @@ def get_history(chat_id):
     db.commit()
     db.close()
     return text
+
+def get_combined_history(user_id, limit=30):
+    entries = []
+
+    # Баланс лог
+    try:
+        db = sqlite3.connect('files/users.db')
+        cursor = db.cursor()
+        cursor.execute(
+            'SELECT amount, balance_after, description, created_at FROM balance_log WHERE user_id = ? ORDER BY id DESC LIMIT ?',
+            (user_id, limit)
+        )
+        for amount, balance_after, description, created_at in cursor.fetchall():
+            try:
+                dt = datetime.strptime(created_at, '%d.%m.%Y %H:%M:%S')
+            except Exception:
+                dt = datetime.min
+            sign = '+' if amount >= 0 else ''
+            desc = f' — {description}' if description else ''
+            entries.append((dt, f'<b>{created_at}</b>\n{sign}{amount:.2f}₽{desc}\nБаланс: {balance_after:.2f}₽'))
+        db.close()
+    except Exception:
+        pass
+
+    # Архив заказов
+    try:
+        db = sqlite3.connect('files/arhive.db')
+        cursor = db.cursor()
+        cursor.execute('SELECT date, usluga, summa, number FROM uslugi WHERE id = ?', (user_id,))
+        for date, usluga, summa, number in cursor.fetchall():
+            try:
+                dt = datetime.strptime(date, '%d.%m.%Y %H:%M:%S')
+            except Exception:
+                try:
+                    dt = datetime.strptime(date, '%d.%m.%Y')
+                except Exception:
+                    dt = datetime.min
+            entries.append((dt, f'<b>Заказ №{number}</b>\nДата: {date}\nУслуга: {usluga}\nСумма: {summa}₽'))
+        db.close()
+    except Exception:
+        pass
+
+    if not entries:
+        return ''
+
+    entries.sort(key=lambda x: x[0], reverse=True)
+    return '\n➖➖➖➖➖➖➖\n'.join(e[1] for e in entries[:limit])
 #Курс валют
 def get_kurs(valuta):
     file = 'valuta.json'
