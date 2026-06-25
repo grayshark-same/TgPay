@@ -777,6 +777,35 @@ def feed(id, all):
                     types.InlineKeyboardButton(text=f'{id}/{all}', callback_data='pass'),
                     types.InlineKeyboardButton(text='⏩', callback_data=f'feed_inc_{id}'))
     return markup
+
+
+def get_feedback_admin():
+    """Returns list of (text, rowid) for admin review browsing, one review per entry."""
+    with sqlite3.connect('files/otzivi.db') as db:
+        rows = db.execute('SELECT rowid, name, otziv, id FROM otzivi ORDER BY rowid DESC').fetchall()
+    result = []
+    for rowid, name, otziv, user_id in rows:
+        text = f'<b>{name}</b>\n🆔 {user_id}\n{otziv}'
+        result.append((text, rowid))
+    return result
+
+
+def feed_admin(idx, total, rowid):
+    markup = types.InlineKeyboardMarkup(row_width=4)
+    markup.add(
+        types.InlineKeyboardButton(text='⏮', callback_data=f'afeed_first'),
+        types.InlineKeyboardButton(text='⏪', callback_data=f'afeed_dec_{idx}'),
+        types.InlineKeyboardButton(text='⏩', callback_data=f'afeed_inc_{idx}'),
+        types.InlineKeyboardButton(text='⏭', callback_data=f'afeed_last'),
+    )
+    markup.add(types.InlineKeyboardButton(text=f'{idx}/{total}', callback_data='pass'))
+    markup.add(types.InlineKeyboardButton(text='🗑 Удалить', callback_data=f'del_otziv_{rowid}'))
+    return markup
+
+
+def delete_otziv(rowid):
+    with sqlite3.connect('files/otzivi.db') as db:
+        db.execute('DELETE FROM otzivi WHERE rowid = ?', (rowid,))
 #Получение баланса
 def get_balans(chat_id):
     db = sqlite3.connect('files/users.db')
