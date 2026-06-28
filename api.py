@@ -7,9 +7,8 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 import jwt
-import requests as _requests
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Depends, Request
+from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
@@ -28,7 +27,6 @@ app.add_middleware(
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 JWT_SECRET = os.getenv("JWT_SECRET", BOT_TOKEN)
-_TG_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 JWT_EXPIRE_DAYS = 30
 USERS_DB = "files/users.db"
 ARCHIVE_DB = "files/arhive.db"
@@ -463,56 +461,34 @@ def purchase_esim(body: EsimPurchaseRequest, tg_id: int = Depends(_get_current_u
     }
 
 
-# ── lava.top eSIM subscription webhook ───────────────────────────────────────
-
-_ESIM_OFFERS_REV = {
-    "e451cfe0-e26b-4c55-a285-e160d70cf558": "Vodafone",
-    "870ad3ec-47ef-4fc5-b197-3fd48c99c621": "Kyivstar",
-    "78a7e306-cb9e-44fa-8205-a5de9ea84bb4": "Lifecell",
-}
-
-
-@app.post("/lavatop/esim")
-async def lavatop_esim_webhook(request: Request):
-    """Уведомления о lava.top-подписках eSIM. Деньги идут напрямую мерчанту."""
-    try:
-        data = await request.json()
-        event = data.get("event", "")
-        print(f"[lavatop/esim] {event}: {json.dumps(data)}")
-
-        if event not in ("payment.success", "subscription.recurring.payment.success"):
-            return {"ok": True}
-
-        buyer = data.get("buyer", {})
-        email = buyer.get("email", "")
-        try:
-            tg_id = int(email.split("@")[0])
-        except (ValueError, IndexError):
-            print(f"[lavatop/esim] cannot parse tg_id from email={email}")
-            return {"ok": True}
-
-        receipt = data.get("receipt", {})
-        amount = int(float(receipt.get("amount", 0)))
-        offer_id = (
-            data.get("offerId")
-            or data.get("contract", {}).get("offerId", "")
-        )
-        operator = _ESIM_OFFERS_REV.get(offer_id, "eSIM")
-        label = "продлена" if "recurring" in event else "активирована"
-        text = (
-            f"✅ <b>Подписка eSIM {operator} {label}!</b>\n\n"
-            f"💳 Сумма: <code>{amount}₽</code>\n"
-            f"📅 Следующее списание — через месяц автоматически."
-        )
-        try:
-            _requests.post(
-                f"{_TG_API}/sendMessage",
-                json={"chat_id": tg_id, "text": text, "parse_mode": "HTML"},
-                timeout=5,
-            )
-        except Exception as e:
-            print(f"[lavatop/esim] notify error user={tg_id}: {e}")
-
-    except Exception as e:
-        print(f"[lavatop/esim] webhook error: {e}")
-    return {"ok": True}
+@app.get("/tg-auth", response_class=HTMLResponse)
+async def tg_auth():
+    html = """<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TGPay</title>
+  <style>
+    body { margin:0; min-height:100vh; display:flex;
+           align-items:center; justify-content:center; background:#0D0D1A; }
+  </style>
+</head>
+<body>
+  <script async src="https://telegram.org/js/telegram-widget.js?22"
+    data-telegram-login="PayTelekom_bot"
+    data-size="large"
+    data-radius="12"
+    data-onauth="onAuth(user)"
+    data-request-access="write">
+  </script>
+  <script>
+    function onAuth(user) {
+      var p = new URLSearchParams();
+      for (var k in user) { if (user[k] != null) p.set(k, user[k]); }
+      window.location.href = 'tgpapp://auth?' + p.toString();
+    }
+  </script>
+</body>
+</html>"""
+    return HTMLResponse(content=html)

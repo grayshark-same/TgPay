@@ -287,6 +287,34 @@ threading.Thread(target=_update_uah_rate_cache, daemon=True).start()
 import esim_sub as _esim_sub
 _esim_sub.init_db()
 
+def _esim_sub_loop():
+    import time as _time
+    while True:
+        _time.sleep(3600)
+        try:
+            rate = _uah_cost_rate_cache or get_uah_cost_rate()
+            if rate:
+                _esim_sub.process_charges(bot, rate)
+        except Exception as e:
+            print(f'[esim_sub] loop error: {e}')
+threading.Thread(target=_esim_sub_loop, daemon=True).start()
+
+def _esim_subs_view(user_id):
+    """Текст + клавиатура со списком активных eSIM-подписок. (None, None) если их нет."""
+    subs = _esim_sub.get_user_subs(user_id)
+    if not subs:
+        return None, None
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    lines = []
+    for sub_id, operator, monthly_uah, next_charge in subs:
+        try:
+            nd = datetime.strptime(next_charge, '%Y-%m-%d %H:%M:%S').strftime('%d.%m.%Y')
+        except Exception:
+            nd = next_charge
+        lines.append(f'✅ {operator} — {monthly_uah:.0f}₴/мес, след. списание {nd}')
+        markup.add(types.InlineKeyboardButton(f'⏸ Отключить автопродление ({operator})', callback_data=f'esim_sub_cancel_{sub_id}'))
+    return '📱 <b>Ваши eSIM-подписки:</b>\n\n' + '\n'.join(lines), markup
+
 def _notify_partner(order_number, order_price, net_profit, service=''):
     try:
         net_profit = float(net_profit)
@@ -330,95 +358,8 @@ nonRefId = [
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 os.chdir(BASE_DIR)
 file_names = []
-SHOP_ID = 'c503c42c-5289-4994-baf5-22b4766ed9f6'  # lava.ru (legacy)
-SECRET_KEY = '92e5db53521a6d5c03221a1361715b34dd67dcb9'  # lava.ru (legacy)
-LAVATOP_API_KEY = os.getenv('LAVATOP_API_KEY', '')
-LAVATOP_OFFER_ID = 'dcfc45aa-ef0e-4dfa-84ef-9d19e391eae7'
-LAVATOP_API = 'https://gate.lava.top'
-ESIM_LAVATOP_OFFERS = {
-    'Vodafone': 'e451cfe0-e26b-4c55-a285-e160d70cf558',
-    'Kievstar': '870ad3ec-47ef-4fc5-b197-3fd48c99c621',
-    'Lifecell': '78a7e306-cb9e-44fa-8205-a5de9ea84bb4',
-}
-
-
-def _esim_card_purchase(message, qty):
-    """Покупка eSIM как помесячной подписки картой (lava.top).
-    Создаёт инвойс, шлёт ссылку, ждёт оплату (поллинг), затем выдаёт eSIM."""
-    chat_id = message.chat.id
-    operator = get_par("EsimOperator", chat_id)
-    offer_id = ESIM_LAVATOP_OFFERS.get(operator)
-    if not offer_id:
-        # для оператора нет карточного оффера (напр. France) — старый способ
-        _do_esim_buy(message, qty)
-        return
-    payload = {
-        'email': f'{chat_id}@tgpay.tg',
-        'offerId': offer_id,
-        'currency': 'RUB',
-        'periodicity': 'MONTHLY',
-        'paymentProvider': 'UNLIMINT',
-        'paymentMethod': 'CARD',
-    }
-    pay_url, invoice_id = None, None
-    try:
-        resp = requests.post(
-            f'{LAVATOP_API}/api/v3/invoice',
-            headers={'X-Api-Key': LAVATOP_API_KEY, 'Content-Type': 'application/json'},
-            json=payload, timeout=10,
-        )
-        data = resp.json()
-        print(f'[esim card] invoice {resp.status_code}: {data}')
-        pay_url = data.get('paymentUrl')
-        invoice_id = data.get('id')
-    except Exception as e:
-        print(f'[esim card] invoice error: {e}')
-    update_state(message, START)
-    if not pay_url or not invoice_id:
-        bot.send_message(chat_id, '❌ Не удалось создать оплату. Попробуйте позже или напишите в поддержку @TGPaySupport_bot', reply_markup=start_markup(chat_id))
-        return
-    markup = types.InlineKeyboardMarkup()
-    markup.add(types.InlineKeyboardButton('💳 Оплатить', url=pay_url))
-    bot.send_message(
-        chat_id,
-        f'📱 <b>Подписка eSIM {operator}</b>\n\n'
-        f'Оплатите подписку картой по кнопке ниже — после оплаты eSIM придёт автоматически.\n'
-        f'Дальше списание будет каждый месяц автоматически.',
-        parse_mode='HTML', reply_markup=markup,
-    )
-    threading.Thread(
-        target=_poll_esim_card_payment,
-        args=(chat_id, message.chat.username or '', operator, qty, invoice_id),
-        daemon=True
-    ).start()
-
-
-def _poll_esim_card_payment(chat_id, username, operator, qty, invoice_id):
-    import time as _time
-    headers = {"X-Api-Key": LAVATOP_API_KEY}
-    elapsed, timeout = 0, 1800  # 30 минут на оплату
-    while elapsed < timeout:
-        _time.sleep(5)
-        elapsed += 5
-        try:
-            r = requests.get(f"{LAVATOP_API}/api/v1/invoices/{invoice_id}", headers=headers, timeout=10)
-            status = r.json().get("status", "")
-        except Exception as e:
-            print(f"[esim card poll] err: {e}")
-            continue
-        print(f"[esim card poll] invoice={invoice_id} status={status}")
-        if status in ("COMPLETED", "success", "subscription-active", "active"):
-            with open("esim.json", encoding="utf-8") as f:
-                summa_per = json.load(f)[operator]["price"]
-            _esim_sub.register(chat_id, operator, 'card')
-            _deliver_esim_units(chat_id, username, operator, qty, summa_per, '\n\n💳 Оплата картой (lava.top)')
-            return
-        if status in ("CANCELED", "EXPIRED", "FAILED", "canceled", "expired", "failed"):
-            bot.send_message(chat_id, '❌ Оплата не прошла, eSIM не выдан. Попробуйте снова.', reply_markup=start_markup(chat_id))
-            return
-    bot.send_message(chat_id, '⌛ Время на оплату истекло, eSIM не выдан.', reply_markup=start_markup(chat_id))
-
-
+SHOP_ID = 'c503c42c-5289-4994-baf5-22b4766ed9f6'  # lava.ru
+SECRET_KEY = '92e5db53521a6d5c03221a1361715b34dd67dcb9'  # lava.ru
 user_order_ids = {}
 plans = {
     "Solo": {"devices": 1, "prices": {1: 360, 3: 990, 6: 1700, 12: 2900}}
@@ -452,21 +393,21 @@ def send_to_archives(method, *args, **kwargs):
 def send_photo_to_archives(photo_bytes, **kwargs):
     for group_id in arhiveGroups:
         try:
-            bot.send_photo(group_id, photo_bytes, **kwargs)
+            bot.send_photo(group_id, photo_bytes, **kwargs, parse_mode='HTML')
         except Exception as e:
             print(f"Ошибка отправки фото в архив {group_id}: {e}")
 
 def send_document_to_archives(document_bytes, **kwargs):
     for group_id in arhiveGroups:
         try:
-            bot.send_document(group_id, document_bytes, **kwargs)
+            bot.send_document(group_id, document_bytes, **kwargs, parse_mode='HTML')
         except Exception as e:
             print(f"Ошибка отправки документа в архив {group_id}: {e}")
 
 def send_message_to_archives(text, **kwargs):
     for group_id in arhiveGroups:
         try:
-            bot.send_message(group_id, text, **kwargs)
+            bot.send_message(group_id, text, **kwargs, parse_mode='HTML')
         except Exception as e:
             print(f"Ошибка отправки сообщения в архив {group_id}: {e}")
 
@@ -1176,7 +1117,9 @@ def esim_reply_photo_handler(message):
         bot.send_photo(user_id_c, downloaded, caption=caption, reply_markup=inline_review)
         bot.send_message(
             user_id_c,
-            f'✅ Ваш eSIM по заявке №<code>{number_c}</code> выдан!\nСпасибо за покупку! 🌍',
+            f'✅ Ваш eSIM по заявке №<code>{number_c}</code> выдан!\n'
+            'У вас включино авто продление, выключить его можно в профиле\n'
+            'Спасибо за покупку! 🌍',
             parse_mode="HTML"
         )
         # Убираем из очереди pending и отправляем в архив
@@ -1233,6 +1176,7 @@ def esim_manual_send_handler(message):
         bot.send_message(
             user_id_c,
             f'✅ Ваш eSIM по заявке №<code>{number_c}</code> выдан!\n'
+            'У вас включино авто продление, выключить его можно в профиле\n'
             f'Спасибо за покупку! 🌍',
             parse_mode="HTML"
         )
@@ -2846,6 +2790,8 @@ def _do_esim_buy(message, qty):
 
     update_state(message, START)
     _deliver_esim_units(chat_id, message.chat.username or '', operator, qty, summa_per, profit_block)
+    # ежемесячная абонплата спишется с баланса по курсу (первый месяц — в цене eSIM)
+    _esim_sub.register(chat_id, operator)
 
 
 def _deliver_esim_units(chat_id, username, operator, qty, summa_per, profit_block):
@@ -3510,42 +3456,53 @@ def get_phone(message):
         db.close()
         bot.send_message(message.chat.id, f'✅Карта добавлена', reply_markup = markup)
         update_state(message, START)
-def poll_lava_payment(chat_id, invoice_id, message_id, amount):
+def poll_lava_payment(chat_id, order_id, message_id):
     import time as _time
     interval = 5
     timeout = 3600
     elapsed = 0
-    headers = {"X-Api-Key": LAVATOP_API_KEY}
-    print(f"[LAVATOP POLL] Старт: invoice={invoice_id}, user={chat_id}")
+    print(f"[LAVA POLL] Старт поллинга: order={order_id}, user={chat_id}")
     while elapsed < timeout:
         _time.sleep(interval)
         elapsed += interval
+        payload = {"shopId": SHOP_ID, "orderId": order_id}
+        json_data = json.dumps(payload, separators=(',', ':'), ensure_ascii=False)
+        signature = hmac.new(SECRET_KEY.encode(), json_data.encode(), hashlib.sha256).hexdigest()
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "Signature": signature
+        }
         try:
-            response = requests.get(f"{LAVATOP_API}/api/v1/invoices/{invoice_id}", headers=headers, timeout=10)
+            response = requests.post("https://api.lava.ru/business/invoice/status", headers=headers, data=json_data.encode('utf-8'))
             data = response.json()
         except Exception as e:
-            print(f"[LAVATOP POLL] Ошибка: {e}")
+            print(f"[LAVA POLL] Ошибка запроса: {e}")
             continue
-        status = data.get("status", "")
-        print(f"[LAVATOP POLL] invoice={invoice_id}, status={status}")
-        if status in ("COMPLETED", "success"):
+        print(f"[LAVA POLL] HTTP {response.status_code} | body: {data}")
+        if response.status_code != 200 or "data" not in data or "status" not in data["data"]:
+            continue
+        status = data["data"]["status"]
+        amount = data["data"]["amount"]
+        print(f"[LAVA POLL] order={order_id}, status={status}, amount={amount}, user={chat_id}")
+        if status == "success":
             try:
                 bot.delete_message(chat_id=chat_id, message_id=message_id)
             except Exception:
                 pass
-            bot.send_message(chat_id, f"✅ Оплата подтверждена! На ваш баланс начислено {amount}₽.", reply_markup=start_markup(chat_id))
-            add_deposit(chat_id, amount, description='Пополнение через Lava.top')
+            bot.send_message(chat_id, f"✅ Оплата подтверждена! На ваш баланс начислено {amount}р.", reply_markup=start_markup(chat_id))
+            add_deposit(chat_id, amount, description='Пополнение через Lava')
             date = datetime.now().date().strftime('%d.%m.%Y')
             send_to_archives(bot.send_message,
-                             f'Дата: {date}\nid: {chat_id}\nНомер заявки: {invoice_id}\nУслуга: Lava.top\nСумма: {amount} р.\n🎩Ранг: {get_user_rank(chat_id)}\nСтатус: ✅Одобрено')
+                             f'Дата: {date}\nid: {chat_id}\nНомер заявки: {order_id}\nУслуга: Lava Pay SBP \nСумма: {amount} р.\n🎩Ранг: {get_user_rank(chat_id)}\nСтатус: ✅Одобрено')
             user_order_ids[chat_id] = ""
             return
-        elif status in ("CANCELED", "EXPIRED", "FAILED", "canceled", "expired", "failed"):
+        elif status in ("expired", "cancel"):
             try:
                 bot.delete_message(chat_id=chat_id, message_id=message_id)
             except Exception:
                 pass
-            bot.send_message(chat_id, "⌛ Срок оплаты истёк. Попробуйте снова.")
+            bot.send_message(chat_id, "⌛ Срок действия ссылки Lava Pay истёк. Попробуйте снова.")
             user_order_ids[chat_id] = ""
             return
     try:
@@ -3564,47 +3521,61 @@ def sbp_test(message):
     elif message.text.isdigit():
         try:
             amount = int(message.text)
-            if 50 <= amount <= 50000:
+            if 1 <= amount <= 50000:
+                add_data('deposit_sum', amount, message.chat.id)
+
+                order_id = str(uuid.uuid4())
+
                 payload = {
-                    "email": f"{message.chat.id}@tgpay.bot",
-                    "offerId": LAVATOP_OFFER_ID,
-                    "currency": "RUB",
-                    "amount": amount,
-                    "paymentProvider": "PAY2ME",
-                    "paymentMethod": "SBP",
+                    "shopId": SHOP_ID,
+                    "sum": amount,
+                    "orderId": order_id,
+                    "successUrl": "https://t.me/PayTelekom_bot",
+                    "failUrl": "https://t.me/PayTelekom_bot",
+                    "expire": 3600,
+                    "customFields": f"telegram_id:{message.chat.id}",
+                    "comment": "Пополнение через LavaPay",
+                    "includeService": ["card", "sbp"]
                 }
+
+                json_data = json.dumps(payload, separators=(',', ':'), ensure_ascii=False)
+                signature = hmac.new(SECRET_KEY.encode(), json_data.encode(), hashlib.sha256).hexdigest()
+
                 headers = {
-                    "X-Api-Key": LAVATOP_API_KEY,
                     "Content-Type": "application/json",
+                    "Accept": "application/json",
+                    "Signature": signature
                 }
-                response = requests.post(f"{LAVATOP_API}/api/v3/invoice", headers=headers, json=payload, timeout=15)
+
+                response = requests.post("https://api.lava.ru/business/invoice/create", headers=headers,
+                                         data=json_data.encode('utf-8'))
                 data = response.json()
 
-                if response.status_code in (200, 201) and data.get("paymentUrl"):
-                    pay_url = data["paymentUrl"]
-                    invoice_id = data["id"]
+                if response.status_code == 200 and "url" in data.get("data", {}):
+                    pay_url = data["data"]["url"]
 
                     inline_markup = types.InlineKeyboardMarkup(row_width=1)
                     inline_markup.add(
-                        types.InlineKeyboardButton("💳 Оплатить", url=pay_url),
-                        types.InlineKeyboardButton("❌ Отказаться от оплаты", callback_data="deposit_cancel"),
+                        types.InlineKeyboardButton("❌ Отказаться от оплаты", callback_data="deposit_cancel")
                     )
+
                     bot.send_message(message.chat.id,
-                                     f"💳 Счёт на <b>{amount}₽</b> создан.\n\nНажмите кнопку для оплаты:",
+                                     f"🔗 Ссылка на оплату Lava Pay:\n\n{pay_url}\n\n❗️<b>Не изменяйте комментарий к переводу</b>!",
                                      parse_mode="HTML", reply_markup=inline_markup)
 
                     waiting_msg = bot.send_message(message.chat.id, "⏳ <i>Ожидаем оплату...</i>", parse_mode="HTML")
-                    user_order_ids[message.chat.id] = invoice_id
+
+                    user_order_ids[message.chat.id] = order_id
                     threading.Thread(
                         target=poll_lava_payment,
-                        args=(message.chat.id, invoice_id, waiting_msg.message_id, amount),
+                        args=(message.chat.id, order_id, waiting_msg.message_id),
                         daemon=True
                     ).start()
                     update_state(message, START)
                 else:
-                    bot.send_message(message.chat.id, f"❌ Ошибка создания счёта: {data}")
+                    bot.send_message(message.chat.id, f"Ошибка создания счёта LavaPay: {data}")
             else:
-                bot.send_message(message.chat.id, "Пополнение доступно от 50 до 50000₽",
+                bot.send_message(message.chat.id, "Пополнение LavaPay доступно от 1 до 50000₽",
                                  reply_markup=start_markup(message.chat.id, text='🚫 Отмена'))
         except Exception as e:
             bot.send_message(message.chat.id, f"❌ Произошла ошибка: {e}")
@@ -5412,11 +5383,7 @@ id: {chat_id}
             qty = int(qty_str)
         except (TypeError, ValueError):
             qty = 1
-        operator = get_par("EsimOperator", chat_id)
-        if _esim_sub.get_card_default(chat_id) and operator in ESIM_LAVATOP_OFFERS:
-            _esim_card_purchase(call.message, qty)
-        else:
-            _do_esim_buy(call.message, qty)
+        _do_esim_buy(call.message, qty)
 
     elif text == "esim_confirm_cancel":
         update_state(call.message, START)
@@ -5595,25 +5562,25 @@ id: {chat_id}
             else:
                 markup = feed(int(id)+1, len(feeds))
                 bot.edit_message_text(chat_id=call.message.chat.id, message_id=call.message.message_id, text=feeds[int(id)], reply_markup=markup, parse_mode='HTML')
-    elif text == 'esim_toggle_paymode':
-        cur = _esim_sub.get_card_default(call.message.chat.id)
-        _esim_sub.set_card_default(call.message.chat.id, not cur)
-        new_card = not cur
-        bot.answer_callback_query(
-            call.id,
-            f'Оплата eSIM: {"картой (помесячно)" if new_card else "с баланса"}',
-            show_alert=True
-        )
-        label = "📱 eSIM оплата: 💳 Картой" if new_card else "📱 eSIM оплата: 💰 С баланса"
-        try:
-            kb = call.message.reply_markup
-            for row in (kb.keyboard if kb else []):
-                for btn in row:
-                    if btn.callback_data == 'esim_toggle_paymode':
-                        btn.text = label
-            bot.edit_message_reply_markup(chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=kb)
-        except Exception:
-            pass
+    elif text == 'esim_subs':
+        view_text, markup = _esim_subs_view(call.message.chat.id)
+        if not view_text:
+            bot.answer_callback_query(call.id, 'Активных eSIM-подписок нет')
+        else:
+            bot.send_message(call.message.chat.id, view_text, parse_mode='HTML', reply_markup=markup)
+
+    elif text.startswith('esim_sub_cancel_'):
+        sub_id = int(text.split('_')[-1])
+        if _esim_sub.cancel(sub_id, call.message.chat.id):
+            bot.answer_callback_query(call.id, 'Автопродление отключено. eSIM остаётся у вас.', show_alert=True)
+            view_text, markup = _esim_subs_view(call.message.chat.id)
+            if view_text:
+                bot.edit_message_text(view_text, chat_id=call.message.chat.id, message_id=call.message.message_id, parse_mode='HTML', reply_markup=markup)
+            else:
+                bot.edit_message_text('📱 Активных eSIM-подписок больше нет.', chat_id=call.message.chat.id, message_id=call.message.message_id, parse_mode='HTML')
+        else:
+            bot.answer_callback_query(call.id, 'Подписка не найдена')
+
     elif text == 'add_balanse':
         inline_markup_json = {
             "inline_keyboard": [
@@ -7202,11 +7169,8 @@ def get_text_messages(message):
         inline_markup.add(types.InlineKeyboardButton("Вывод средств", callback_data="withdraw_bal"))
         inline_markup.add(types.InlineKeyboardButton("История", callback_data="get_history"))
         inline_markup.add(types.InlineKeyboardButton("Реферальная система", callback_data="ref_system"))
-        _card_def = _esim_sub.get_card_default(message.chat.id)
-        inline_markup.add(types.InlineKeyboardButton(
-            "📱 eSIM оплата: 💳 Картой" if _card_def else "📱 eSIM оплата: 💰 С баланса",
-            callback_data="esim_toggle_paymode"
-        ))
+        if _esim_sub.get_user_subs(message.chat.id):
+            inline_markup.add(types.InlineKeyboardButton("📱 eSIM подписки", callback_data="esim_subs"))
 
         cabinet_text = get_cabinet(message.chat.id).replace('`', '<code>', 1).replace('`', '</code>', 1)
         bot.send_message(message.chat.id, cabinet_text, parse_mode="HTML", reply_markup=inline_markup)

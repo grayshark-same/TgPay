@@ -3,7 +3,7 @@ import sqlite3
 
 USERS_DB = 'files/users.db'
 
-# Месячная абонплата (₴) по операторам — справочно.
+# Месячная абонплата (₴) по операторам — списывается с баланса по текущему курсу.
 ESIM_MONTHLY_UAH = {
     'Vodafone': 420,
     'Kievstar': 350,
@@ -20,30 +20,21 @@ def init_db():
             monthly_uah REAL NOT NULL,
             next_charge TIMESTAMP NOT NULL,
             active INTEGER DEFAULT 1,
-            method TEXT DEFAULT 'card',
+            method TEXT DEFAULT 'balance',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )''')
         cols = [r[1] for r in db.execute("PRAGMA table_info(esim_subscriptions)").fetchall()]
         if 'method' not in cols:
-            db.execute("ALTER TABLE esim_subscriptions ADD COLUMN method TEXT DEFAULT 'card'")
-        db.execute('''CREATE TABLE IF NOT EXISTS esim_user_settings (
-            user_id INTEGER PRIMARY KEY,
-            card_default INTEGER DEFAULT 1
-        )''')
+            db.execute("ALTER TABLE esim_subscriptions ADD COLUMN method TEXT DEFAULT 'balance'")
 
 
-def has_active(user_id: int, operator: str) -> bool:
-    with sqlite3.connect(USERS_DB) as db:
-        row = db.execute(
-            'SELECT 1 FROM esim_subscriptions WHERE user_id=? AND operator=? AND active=1',
-            (user_id, operator)
-        ).fetchone()
-        return row is not None
-
-
-def register(user_id: int, operator: str, method: str = 'card') -> bool:
-    """Записать подписку eSIM, если активной ещё нет. True — если создана новая."""
-    monthly = ESIM_MONTHLY_UAH.get(operator, 0)
+def register(user_id: int, operator: str) -> bool:
+    """Создать подписку на ежемесячное списание абонплаты с баланса.
+    Первый месяц входит в цену eSIM, поэтому следующее списание — через 30 дней.
+    Возвращает True, если создана новая (для операторов без месячной платы — False)."""
+    monthly = ESIM_MONTHLY_UAH.get(operator)
+    if not monthly:
+        return False
     with sqlite3.connect(USERS_DB) as db:
         existing = db.execute(
             'SELECT id FROM esim_subscriptions WHERE user_id=? AND operator=? AND active=1',
@@ -55,24 +46,81 @@ def register(user_id: int, operator: str, method: str = 'card') -> bool:
         db.execute(
             'INSERT INTO esim_subscriptions (user_id, operator, monthly_uah, next_charge, method) '
             'VALUES (?,?,?,?,?)',
-            (user_id, operator, monthly, next_charge, method)
+            (user_id, operator, monthly, next_charge, 'balance')
         )
         return True
 
 
-def get_card_default(user_id: int) -> bool:
-    """По умолчанию оплата eSIM картой (True). Можно отключить в профиле."""
+def get_user_subs(user_id: int):
+    """Активные balance-подписки пользователя (для показа в профиле)."""
     with sqlite3.connect(USERS_DB) as db:
-        row = db.execute(
-            'SELECT card_default FROM esim_user_settings WHERE user_id=?', (user_id,)
-        ).fetchone()
-        return True if row is None else bool(row[0])
+        return db.execute(
+            "SELECT id, operator, monthly_uah, next_charge FROM esim_subscriptions "
+            "WHERE user_id=? AND active=1 AND method='balance' ORDER BY created_at DESC",
+            (user_id,)
+        ).fetchall()
 
 
-def set_card_default(user_id: int, value: bool):
+def cancel(sub_id: int, user_id: int) -> bool:
+    """Отключить автопродление подписки. True — если что-то отключили."""
     with sqlite3.connect(USERS_DB) as db:
-        db.execute(
-            'INSERT INTO esim_user_settings (user_id, card_default) VALUES (?,?) '
-            'ON CONFLICT(user_id) DO UPDATE SET card_default=excluded.card_default',
-            (user_id, 1 if value else 0)
+        cur = db.execute(
+            'UPDATE esim_subscriptions SET active=0 WHERE id=? AND user_id=? AND active=1',
+            (sub_id, user_id)
         )
+        return cur.rowcount > 0
+
+
+def get_due_subs():
+    """Подписки, у которых подошёл срок списания с баланса."""
+    now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    with sqlite3.connect(USERS_DB) as db:
+        return db.execute(
+            "SELECT id, user_id, operator, monthly_uah FROM esim_subscriptions "
+            "WHERE active=1 AND method='balance' AND next_charge <= ?",
+            (now,)
+        ).fetchall()
+
+
+def _advance(sub_id: int):
+    next_charge = (datetime.datetime.now() + datetime.timedelta(days=30)).strftime('%Y-%m-%d %H:%M:%S')
+    with sqlite3.connect(USERS_DB) as db:
+        db.execute('UPDATE esim_subscriptions SET next_charge=? WHERE id=?', (next_charge, sub_id))
+
+
+def _deactivate(sub_id: int):
+    with sqlite3.connect(USERS_DB) as db:
+        db.execute('UPDATE esim_subscriptions SET active=0 WHERE id=?', (sub_id,))
+
+
+def process_charges(bot_instance, uah_rate: float):
+    """Списать абонплату с баланса за все просроченные подписки. Сумма = monthly_uah * курс."""
+    from help import get_balans, add_deposit
+    for sub_id, user_id, operator, monthly_uah in get_due_subs():
+        rub_amount = round(monthly_uah * uah_rate)
+        balance = float(get_balans(user_id) or 0)
+        if balance >= rub_amount:
+            add_deposit(user_id, -rub_amount, description=f'Абонплата eSIM {operator}')
+            _advance(sub_id)
+            try:
+                bot_instance.send_message(
+                    user_id,
+                    f'📱 <b>Абонплата eSIM {operator}</b>\n'
+                    f'💸 Списано {rub_amount}₽ ({monthly_uah:.0f}₴ по курсу)\n'
+                    f'📅 Следующее списание через 30 дней',
+                    parse_mode='HTML'
+                )
+            except Exception as e:
+                print(f'[esim_sub] notify error user={user_id}: {e}')
+        else:
+            _deactivate(sub_id)
+            try:
+                bot_instance.send_message(
+                    user_id,
+                    f'❌ <b>Автосписание eSIM {operator} приостановлено</b>\n\n'
+                    f'Нужно {rub_amount}₽, на балансе {balance:.0f}₽.\n'
+                    f'Пополните баланс и оформите eSIM заново.',
+                    parse_mode='HTML'
+                )
+            except Exception as e:
+                print(f'[esim_sub] notify error user={user_id}: {e}')
