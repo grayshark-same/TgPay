@@ -647,7 +647,7 @@ def get_trial_vpn(user_id, username):
             vpn_data, status = get_vpn_link(username, 1, 2)
             links = vpn_data.get("links") or [vpn_data.get("link")]
             links = [l for l in links if l]
-            links_text = "\n\n".join([f"🔗 Ключ {i + 1}:\n`{link}`" for i, link in enumerate(links)])
+            links_text = "\n\n".join([f"🔗 Ключ {i + 1}:\n<code>{link}</code>" for i, link in enumerate(links)])
             return links_text
         except Exception as exc:
             return f"error: {exc}"

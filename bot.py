@@ -37,6 +37,7 @@ import threading
 import sys
 import traceback
 import textwrap
+import html
 import time
 import hmac
 import pytz
@@ -265,7 +266,7 @@ CHANNEL_ID = '@TGPayTop'
 
 
 load_dotenv()
-bot = telebot.TeleBot(os.environ["BOT_TOKEN"])
+bot = telebot.TeleBot(os.environ["BOT_TOKEN"], parse_mode='HTML')
 
 # Кэш курса UAH для расчёта прибыли (обновляется в фоне каждый час)
 _uah_cost_rate_cache = None
@@ -286,6 +287,7 @@ threading.Thread(target=_update_uah_rate_cache, daemon=True).start()
 
 import esim_sub as _esim_sub
 _esim_sub.init_db()
+import esim_pdf as _esim_pdf
 
 def _esim_sub_loop():
     import time as _time
@@ -367,6 +369,31 @@ plans = {
 Nicepay = True
 adminGroup = int(os.environ["ADMIN_GROUP"])
 arhiveGroups = [int(x) for x in os.environ["ARHIVE_GROUPS"].split(",")]
+
+def _daily_db_backup_loop():
+    """Ежедневно в 15:00 МСК отправляет users.db в архивные группы."""
+    import time as _time
+    from datetime import datetime as _dt, timedelta
+    tz = pytz.timezone('Europe/Moscow')
+    while True:
+        now = _dt.now(tz)
+        target = now.replace(hour=15, minute=0, second=0, microsecond=0)
+        if now >= target:
+            target += timedelta(days=1)
+        _time.sleep(max(1, (target - now).total_seconds()))
+        cap = f'🗄 Бэкап БД {_dt.now(tz).strftime("%d.%m.%Y %H:%M МСК")}'
+        try:
+            with open('files/users.db', 'rb') as f:
+                data = f.read()
+        except Exception as e:
+            print(f'[db_backup] read error: {e}')
+            continue
+        for gid in arhiveGroups:
+            try:
+                bot.send_document(gid, data, visible_file_name='users.db', caption=cap)
+            except Exception as e:
+                print(f'[db_backup] group {gid} error: {e}')
+threading.Thread(target=_daily_db_backup_loop, daemon=True).start()
 
 START, MOBIL, PHONE, SUMM, VALUTA, GET_VALUE, EMAIL, AKK,\
 GET_LOGIN_INET, INET_SUMM, GET_FEEDBACK, DEPOSIT_SUMM, ID,\
@@ -837,7 +864,7 @@ def deploy_handler(message):
         output = (result.stdout + result.stderr).strip()
         if len(output) > 4000:
             output = output[-4000:]
-        bot.send_message(message.chat.id, f"```\n{output}\n```", parse_mode="Markdown")
+        bot.send_message(message.chat.id, f"<pre>{html.escape(output)}</pre>", parse_mode="HTML")
     except subprocess.TimeoutExpired:
         bot.send_message(message.chat.id, "❌ Таймаут — скрипт выполнялся дольше 60 сек.")
     except Exception as e:
@@ -1005,7 +1032,7 @@ def _process_svc_gb_order(call):
         f"Услуга: {svc_name}\n"
         f"Оператор: {svc_operator}\n"
         f"📱 Номер: {phone}\n"
-        f"🎩Ранг: {get_user_rank(chat_id)}\n"
+        f"🎩Ранг: {get_user_rank(chat_id)}\n💰 Баланс: {get_balans(chat_id)} ₽\n"
         f"Сумма: {svc_price} ₽",
         reply_markup=admin_gb_markup)
     update_state(call.message, START)
@@ -1295,7 +1322,7 @@ def get_vaucher(message):
                         usluga = f'Пополнение баланса.\nСпособ оплаты: Ваучер\nКод ваучера: {code}'
                         number = to_arhiv(message.chat.id, usluga, vaucher)
                         date = datetime.now().date().strftime('%d.%m.%Y')
-                        send_to_archives(bot.send_message, f'Дата: {date}\nЗаявка №{number}\nПользователь: @{message.chat.username}\nid: {message.chat.id}\nУслуга: {usluga}\nСумма: {vaucher}\n🎩Ранг: {get_user_rank(message.chat.id)}\nСтатус: ✅Одобрено')
+                        send_to_archives(bot.send_message, f'Дата: {date}\nЗаявка №{number}\nПользователь: @{message.chat.username}\nid: {message.chat.id}\nУслуга: {usluga}\nСумма: {vaucher}\n🎩Ранг: {get_user_rank(message.chat.id)}\n💰 Баланс: {get_balans(message.chat.id)} ₽\nСтатус: ✅Одобрено')
                         update_state(message, START)
                     except:
                         add_deposit(message.chat.id, str(vaucher), description='Ваучер')
@@ -1303,7 +1330,7 @@ def get_vaucher(message):
                         usluga = f'Пополнение баланса.\nСпособ оплаты: Ваучер\nКод ваучера: {code}'
                         number = to_arhiv(message.chat.id, usluga, vaucher)
                         date = datetime.now().date().strftime('%d.%m.%Y')
-                        send_to_archives(bot.send_message, f'Дата: {date}\nЗаявка №{number}\nПользователь: @{message.chat.username}\nid: {message.chat.id}\nУслуга: {usluga}\nСумма: {vaucher}\n🎩Ранг: {get_user_rank(message.chat.id)}\nСтатус: ✅Одобрено')
+                        send_to_archives(bot.send_message, f'Дата: {date}\nЗаявка №{number}\nПользователь: @{message.chat.username}\nid: {message.chat.id}\nУслуга: {usluga}\nСумма: {vaucher}\n🎩Ранг: {get_user_rank(message.chat.id)}\n💰 Баланс: {get_balans(message.chat.id)} ₽\nСтатус: ✅Одобрено')
                         update_state(message, START)
                     update_money_report_for_day(money = int(vaucher))
                     update_money_report_for_month(money = int(vaucher))
@@ -1424,7 +1451,7 @@ def get_phone(message):
                         cost = float(message.text)
                         profit = round(summ - cost, 2)
                         profit_line = f'\n💰Себестоимость: {cost}₽\n📈Чистая прибыль: {profit}₽'
-                        bot.send_message(adminGroup, f'Заявка №{number}\nПользователь: @{message.chat.username} \nid: {message.chat.id}\nУслуга: {usluga}\n🎩Ранг: {get_user_rank(message.chat.id)}\nСумма: {summ}{profit_line}', reply_markup = admin_markup())
+                        bot.send_message(adminGroup, f'Заявка №{number}\nПользователь: @{message.chat.username} \nid: {message.chat.id}\nУслуга: {usluga}\n🎩Ранг: {get_user_rank(message.chat.id)}\n💰 Баланс: {get_balans(message.chat.id)} ₽\nСумма: {summ}{profit_line}', reply_markup = admin_markup())
                         update_state(message, START)
                 else:
                     update_state(message, START)
@@ -2038,7 +2065,7 @@ def get_receipt(message):
             number = to_arhiv(message.chat.id, usluga, summ)
             mes = f'Заявка №{number}\n😉Ожидайте зачисления на баланс\n⌚️В крайних случаях деньги могут поступить в течении 24-х часов'
             with open(f"receipt_{message.chat.id}.jpg", 'rb') as new_file:
-                bot.send_photo(adminGroup, photo=new_file.read(), caption=f'Заявка №{number}\nПользователь: @{message.chat.username} \nid: {message.chat.id}\nУслуга: {usluga}\n🎩Ранг: {get_user_rank(message.chat.id)}\nСумма: {summ}\nСумма с промокодом: {promocode_summa}', reply_markup = admin_markup())
+                bot.send_photo(adminGroup, photo=new_file.read(), caption=f'Заявка №{number}\nПользователь: @{message.chat.username} \nid: {message.chat.id}\nУслуга: {usluga}\n🎩Ранг: {get_user_rank(message.chat.id)}\n💰 Баланс: {get_balans(message.chat.id)} ₽\nСумма: {summ}\nСумма с промокодом: {promocode_summa}', reply_markup = admin_markup())
             bot.send_message(message.chat.id, mes, reply_markup=start_markup(message.chat.id))
             update_state(message, START)
         except:
@@ -2046,7 +2073,7 @@ def get_receipt(message):
             number = to_arhiv(message.chat.id, usluga, summ)
             mes = f'Заявка №{number}\n😉Ожидайте зачисления на баланс\n⌚️В крайних случаях деньги могут поступить в течении 24-х часов'
             with open(f"receipt_{message.chat.id}.jpg", 'rb') as new_file:
-                bot.send_photo(adminGroup, photo=new_file.read(), caption=f'Заявка №{number}\nПользователь: @{message.chat.username} \nid: {message.chat.id}\nУслуга: {usluga}\n🎩Ранг: {get_user_rank(message.chat.id)}\nСумма: {summ}', reply_markup = admin_markup())
+                bot.send_photo(adminGroup, photo=new_file.read(), caption=f'Заявка №{number}\nПользователь: @{message.chat.username} \nid: {message.chat.id}\nУслуга: {usluga}\n🎩Ранг: {get_user_rank(message.chat.id)}\n💰 Баланс: {get_balans(message.chat.id)} ₽\nСумма: {summ}', reply_markup = admin_markup())
             bot.send_message(message.chat.id, mes, reply_markup=start_markup(message.chat.id))
             update_state(message, START)
     except:
@@ -2074,7 +2101,7 @@ def get_receipt(message):
             number = to_arhiv(message.chat.id, usluga, summ)
             mes = f'Заявка №{number}\n😉Ожидайте зачисления на баланс\n⌚️В крайних случаях деньги могут поступить в течении 24-х часов'
             with open(f"receipt_{message.chat.id}.pdf", 'rb') as new_file:
-                bot.send_document(adminGroup, document=new_file, caption=f'Заявка №{number}\nПользователь: @{message.chat.username} \nid: {message.chat.id}\nУслуга: {usluga}\n🎩Ранг: {get_user_rank(message.chat.id)}\nСумма: {summ}\nСумма с промокодом: {promocode_summa}', reply_markup = admin_markup())
+                bot.send_document(adminGroup, document=new_file, caption=f'Заявка №{number}\nПользователь: @{message.chat.username} \nid: {message.chat.id}\nУслуга: {usluga}\n🎩Ранг: {get_user_rank(message.chat.id)}\n💰 Баланс: {get_balans(message.chat.id)} ₽\nСумма: {summ}\nСумма с промокодом: {promocode_summa}', reply_markup = admin_markup())
             bot.send_message(message.chat.id, mes, reply_markup=start_markup(message.chat.id))
             update_state(message, START)
         except:
@@ -2082,7 +2109,7 @@ def get_receipt(message):
             number = to_arhiv(message.chat.id, usluga, summ)
             mes = f'Заявка №{number}\n😉Ожидайте зачисления на баланс\n⌚️В крайних случаях деньги могут поступить в течении 24-х часов'
             with open(f"receipt_{message.chat.id}.pdf", 'rb') as new_file:
-                bot.send_document(adminGroup, document=new_file, caption=f'Заявка №{number}\nПользователь: @{message.chat.username} \nid: {message.chat.id}\nУслуга: {usluga}\n🎩Ранг: {get_user_rank(message.chat.id)}\nСумма: {summ}', reply_markup = admin_markup())
+                bot.send_document(adminGroup, document=new_file, caption=f'Заявка №{number}\nПользователь: @{message.chat.username} \nid: {message.chat.id}\nУслуга: {usluga}\n🎩Ранг: {get_user_rank(message.chat.id)}\n💰 Баланс: {get_balans(message.chat.id)} ₽\nСумма: {summ}', reply_markup = admin_markup())
             bot.send_message(message.chat.id, mes, reply_markup=start_markup(message.chat.id))
             update_state(message, START)
 
@@ -2316,7 +2343,7 @@ def get_balanse(message):
                         parse_mode="HTML"
                     )
             bot.send_message(id, f'✅Ваш баланс пополнен на сумму {suuu} р.')
-            send_to_archives(bot.send_message, f'Дата: {date}\nid: {id}\nУслуга: {usluga}\nСумма: {suuu} р.\n🎩Ранг: {get_user_rank(message.chat.id)}\nСтатус: ✅Одобрено')
+            send_to_archives(bot.send_message, f'Дата: {date}\nid: {id}\nУслуга: {usluga}\nСумма: {suuu} р.\n🎩Ранг: {get_user_rank(message.chat.id)}\n💰 Баланс: {get_balans(message.chat.id)} ₽\nСтатус: ✅Одобрено')
             update_state(message, START)
         else:
             bot.send_message(message.chat.id, 'Неверно!')
@@ -2338,7 +2365,7 @@ def get_phone(message):
         inline_markup.add(types.InlineKeyboardButton("✅Выставить счёт✅", callback_data="schet"))
         inline_markup.add(types.InlineKeyboardButton("📣Начать диалог📣", callback_data="start_dialog"))
         inline_markup.add(types.InlineKeyboardButton("❌Закончить диалог❌", callback_data="stop_dialog"))
-        bot.send_message(adminGroup, f'Заявка Аккаунты\nПользователь: @{message.chat.username} \nid: {message.chat.id}\n🎩Ранг: {get_user_rank(message.chat.id)}\nУслуга: {usluga}', reply_markup = inline_markup)
+        bot.send_message(adminGroup, f'Заявка Аккаунты\nПользователь: @{message.chat.username} \nid: {message.chat.id}\n🎩Ранг: {get_user_rank(message.chat.id)}\n💰 Баланс: {get_balans(message.chat.id)} ₽\nУслуга: {usluga}', reply_markup = inline_markup)
         update_state(message, START)
 
 #PHONE
@@ -2719,6 +2746,8 @@ def _do_esim_buy(message, qty):
         cleaned = False
         for key in list(esim_data[operator].keys()):
             entry = esim_data[operator][key]
+            if entry.get("pdf_fields") or entry.get("pdf_photo"):
+                continue  # PDF-записи валидны без file_id/картинки
             if not entry.get("file_id"):
                 img_path = f"eSIM/{entry.get('image_answer', '')}.jpg"
                 if not os.path.exists(img_path):
@@ -2816,6 +2845,42 @@ def _deliver_esim_units(chat_id, username, operator, qty, summa_per, profit_bloc
         esim_file_id = esim_entry.get("file_id")
         esim_caption = esim_entry.get("message_answer", "Ваш eSIM")
         try:
+            pdf_fields = esim_entry.get("pdf_fields")
+            pdf_photo = esim_entry.get("pdf_photo")
+            if pdf_fields or pdf_photo:
+                tmp_pdf = f"eSIM/_d_{chat_id}_{number}.pdf"
+                if pdf_photo:
+                    activation_url = pdf_photo.get("activation_url", "")
+                    _esim_pdf.make_esim_pdf_photo(operator, tmp_pdf, pdf_photo.get("photo_path"), activation_url)
+                else:
+                    activation_url = pdf_fields.get("activation_url", "")
+                    if _esim_pdf.TEMPLATES.get(operator, {}).get("mode") == "fields":
+                        _esim_pdf.make_esim_pdf_kievstar(tmp_pdf, pdf_fields)
+                    else:
+                        _esim_pdf.make_esim_pdf(operator, tmp_pdf, pdf_fields)
+                _mk = types.InlineKeyboardMarkup()
+                _au = _esim_pdf.apple_url(activation_url)
+                if _au:
+                    _mk.add(types.InlineKeyboardButton("📲 Установить eSIM", url=_au))
+                _mk.add(types.InlineKeyboardButton("💬 Поддержка", url="https://t.me/Paytelekom_bot?start=eSIM"))
+                _mk.add(types.InlineKeyboardButton("⬆️ Оставить отзыв", callback_data='send_feedback'))
+                with open(tmp_pdf, "rb") as pf:
+                    bot.send_document(chat_id, pf, caption=esim_caption, reply_markup=_mk)
+                try:
+                    os.remove(tmp_pdf)
+                except Exception:
+                    pass
+                if pdf_photo and pdf_photo.get("photo_path") and os.path.exists(pdf_photo["photo_path"]):
+                    os.remove(pdf_photo["photo_path"])
+                send_to_archives(bot.send_message,
+                    f'Заявка №{number}\nПользователь: @{username}\nid: {chat_id}\n\n'
+                    f'Услуга: Esim {operator} (PDF)\n🎩Ранг: {get_user_rank(chat_id)}\n💰 Баланс: {get_balans(chat_id)} ₽{profit_block}',
+                    parse_mode='HTML')
+                del esim_data[operator][esim_key]
+                with open("eSIM/esim_answer.json", "w", encoding="utf-8") as file:
+                    json.dump(esim_data, file, ensure_ascii=False, indent=4)
+                delivered += 1
+                continue
             photo_bytes = None
             if esim_file_id:
                 try:
@@ -2831,7 +2896,7 @@ def _deliver_esim_units(chat_id, username, operator, qty, summa_per, profit_bloc
                 bot.send_photo(chat_id, photo_bytes, caption=esim_caption)
             archive_caption = (
                 f'Заявка №{number}\nПользователь: @{username} \nid: {chat_id}\n\n'
-                f'Услуга: Esim {operator}\n🎩Ранг: {get_user_rank(chat_id)}{profit_block}'
+                f'Услуга: Esim {operator}\n🎩Ранг: {get_user_rank(chat_id)}\n💰 Баланс: {get_balans(chat_id)} ₽{profit_block}'
             )
             if esim_file_id:
                 file_info = bot.get_file(esim_file_id)
@@ -2888,7 +2953,7 @@ def _deliver_esim_units(chat_id, username, operator, qty, summa_per, profit_bloc
             f'Пользователь: @{username}\n'
             f'id: {chat_id}\n'
             f'Оператор: {operator}\n'
-            f'🎩Ранг: {get_user_rank(chat_id)}\n'
+            f'🎩Ранг: {get_user_rank(chat_id)}\n💰 Баланс: {get_balans(chat_id)} ₽\n'
             f'Сумма: {summa_per} ₽',
             reply_markup=esim_manual_markup
         )
@@ -2939,6 +3004,117 @@ def esim_image_edit(message):
     tariff_name = get_par("tariff_name", message.chat.id)
     esim_method = get_par("esim_edit_method", message.chat.id)
     markup = start_markup(message.chat.id)
+
+    # PDF-операторы: фото eSIM-карты + ссылка активации
+    if esim_method == "pdf_photo_tariff":
+        operator = tariff_name
+        if message.content_type == 'text':
+            if message.text == '🚫 Отмена':
+                bot.send_message(message.chat.id, "Отменено", reply_markup=markup)
+                update_state(message, START)
+                return
+            if message.text == '✅ Готово':
+                bot.send_message(message.chat.id, f'✅ Загрузка eSIM {operator} завершена.', reply_markup=markup)
+                _try_deliver_pending_esim(operator)
+                update_state(message, START)
+                return
+            photo_path = get_par("pdf_photo_path", message.chat.id)
+            if not photo_path:
+                bot.send_message(message.chat.id, "Сначала пришлите фото eSIM-карты.")
+                return
+            activation_url = message.text.strip()
+            with _esim_stock_lock:
+                with open("eSIM/esim_answer.json", encoding="utf-8") as f:
+                    esim_data = json.load(f)
+                esim_data.setdefault(operator, {})
+                keys = [int(k) for k in esim_data[operator].keys()] if esim_data[operator] else []
+                num = max(keys) + 1 if keys else 1
+                esim_data[operator][num] = {
+                    "pdf_photo": {"photo_path": photo_path, "activation_url": activation_url},
+                    "message_answer": "Ваш eSIM",
+                }
+                with open("eSIM/esim_answer.json", "w", encoding="utf-8") as f:
+                    json.dump(esim_data, f, ensure_ascii=False, indent=4)
+                total = len(esim_data[operator])
+            add_data("pdf_photo_path", "", message.chat.id)
+            _done = types.ReplyKeyboardMarkup(resize_keyboard=True)
+            _done.add(types.KeyboardButton('✅ Готово'))
+            _done.add(types.KeyboardButton('🚫 Отмена'))
+            bot.send_message(message.chat.id,
+                f"✅ eSIM добавлен в сток {operator}: {total} шт.\n\nПришлите фото eSIM-карты для следующего или «✅ Готово».",
+                reply_markup=_done)
+            return
+
+        if message.content_type in ('photo', 'document'):
+            file_id = message.photo[-1].file_id if message.content_type == 'photo' else message.document.file_id
+            file_info = bot.get_file(file_id)
+            downloaded_file = bot.download_file(file_info.file_path)
+            os.makedirs("eSIM/photos", exist_ok=True)
+            photo_path = f"eSIM/photos/{operator}_{message.chat.id}_{message.message_id}.jpg"
+            with open(photo_path, 'wb') as nf:
+                nf.write(downloaded_file)
+            add_data("pdf_photo_path", photo_path, message.chat.id)
+            bot.send_message(message.chat.id, "Введите ссылку активации (LPA):",
+                             reply_markup=start_markup(message.chat.id, text='🚫 Отмена'))
+            return
+
+        bot.send_message(message.chat.id, "Пришлите фото eSIM-карты.")
+        return
+
+    # PDF-операторы с вставкой полей в шаблон (Kievstar): пошаговый ввод данных
+    if esim_method == "pdf_fields_tariff":
+        operator = tariff_name
+        if message.content_type != 'text':
+            bot.send_message(message.chat.id, "Введите значение текстом.")
+            return
+        if message.text == '🚫 Отмена':
+            bot.send_message(message.chat.id, "Отменено", reply_markup=markup)
+            update_state(message, START)
+            return
+        fields = json.loads(get_par("pdf_fields_list", message.chat.id))
+        idx = int(get_par("pdf_fields_idx", message.chat.id))
+        values = json.loads(get_par("pdf_fields_values", message.chat.id))
+
+        if message.text == '✅ Готово' and idx >= len(fields):
+            bot.send_message(message.chat.id, f'✅ Загрузка eSIM {operator} завершена.', reply_markup=markup)
+            _try_deliver_pending_esim(operator)
+            update_state(message, START)
+            return
+
+        key, label = fields[idx]
+        values[key] = message.text.strip()
+        idx += 1
+
+        if idx < len(fields):
+            add_data("pdf_fields_idx", str(idx), message.chat.id)
+            add_data("pdf_fields_values", json.dumps(values), message.chat.id)
+            bot.send_message(message.chat.id, f"Введите {fields[idx][1]}:",
+                             reply_markup=start_markup(message.chat.id, text='🚫 Отмена'))
+            return
+
+        with _esim_stock_lock:
+            with open("eSIM/esim_answer.json", encoding="utf-8") as f:
+                esim_data = json.load(f)
+            esim_data.setdefault(operator, {})
+            keys = [int(k) for k in esim_data[operator].keys()] if esim_data[operator] else []
+            num = max(keys) + 1 if keys else 1
+            esim_data[operator][num] = {
+                "pdf_fields": values,
+                "message_answer": "Ваш eSIM",
+            }
+            with open("eSIM/esim_answer.json", "w", encoding="utf-8") as f:
+                json.dump(esim_data, f, ensure_ascii=False, indent=4)
+            total = len(esim_data[operator])
+
+        add_data("pdf_fields_idx", "0", message.chat.id)
+        add_data("pdf_fields_values", "{}", message.chat.id)
+        _done = types.ReplyKeyboardMarkup(resize_keyboard=True)
+        _done.add(types.KeyboardButton('✅ Готово'))
+        _done.add(types.KeyboardButton('🚫 Отмена'))
+        bot.send_message(message.chat.id,
+            f"✅ eSIM добавлен в сток {operator}: {total} шт.\n\nВведите {fields[0][1]} для следующего или «✅ Готово».",
+            reply_markup=_done)
+        return
 
     # Кнопка "Готово" при мультизагрузке eSIM
     if message.content_type == 'text':
@@ -3395,7 +3571,7 @@ def crypt_txid(message):
 
     bot.send_message(
         adminGroup,
-        f'Заявка №{number}\nПользователь: @{message.chat.username}\nid: <code>{message.chat.id}</code>\nУслуга: {usluga}\n🎩Ранг: {get_user_rank(message.chat.id)}\nСумма: {summ_rub}\nСумма USD: {summ_usd}$\nTXID: <code>{txid}</code>',
+        f'Заявка №{number}\nПользователь: @{message.chat.username}\nid: <code>{message.chat.id}</code>\nУслуга: {usluga}\n🎩Ранг: {get_user_rank(message.chat.id)}\n💰 Баланс: {get_balans(message.chat.id)} ₽\nСумма: {summ_rub}\nСумма USD: {summ_usd}$\nTXID: <code>{txid}</code>',
         parse_mode='HTML',
         reply_markup=admin_markup()
     )
@@ -3494,7 +3670,7 @@ def poll_lava_payment(chat_id, order_id, message_id):
             add_deposit(chat_id, amount, description='Пополнение через Lava')
             date = datetime.now().date().strftime('%d.%m.%Y')
             send_to_archives(bot.send_message,
-                             f'Дата: {date}\nid: {chat_id}\nНомер заявки: {order_id}\nУслуга: Lava Pay SBP \nСумма: {amount} р.\n🎩Ранг: {get_user_rank(chat_id)}\nСтатус: ✅Одобрено')
+                             f'Дата: {date}\nid: {chat_id}\nНомер заявки: {order_id}\nУслуга: Lava Pay SBP \nСумма: {amount} р.\n🎩Ранг: {get_user_rank(chat_id)}\n💰 Баланс: {get_balans(chat_id)} ₽\nСтатус: ✅Одобрено')
             user_order_ids[chat_id] = ""
             return
         elif status in ("expired", "cancel"):
@@ -3593,8 +3769,8 @@ def yoomany_test(message):
             application_number = str(uuid.uuid4())
             bot.send_message(
                 message.chat.id,
-                text=f"***Ваш номер заявки: {application_number}***\n\nК оплате `{message.text}` ₽\nПереведите по номеру `{req_data['phone_req']}`, либо по [ссылке]({req_data['link_req']})\nПеревод нужно сделать ***РОВНО {message.text} ₽***, иначе платеж не получится проверить\n\n***У вас будет 10 минут на оплату. Заявки проверяются автоматически***",
-                parse_mode="MARKDOWN",
+                text=f"<b>Ваш номер заявки: {application_number}</b>\n\nК оплате <code>{message.text}</code> ₽\nПереведите по номеру <code>{req_data['phone_req']}</code>, либо по <a href=\"{req_data['link_req']}\">ссылке</a>\nПеревод нужно сделать <b>РОВНО {message.text} ₽</b>, иначе платеж не получится проверить\n\n<b>У вас будет 10 минут на оплату. Заявки проверяются автоматически</b>",
+                parse_mode="HTML",
                 reply_markup = start_markup(message.chat.id)
             )
             data = json.load(open("Yoomoney/pending_applications.json", encoding="utf-8"))
@@ -4107,7 +4283,7 @@ def check_lava_payment(call):
             print(f"[LAVA] add_deposit result: {result}")
             date = datetime.now().date().strftime('%d.%m.%Y')
             send_to_archives(bot.send_message,
-                             f'Дата: {date}\nid: {call.message.chat.id}\nПользователь: {call.message.chat.username}\nНомер заявки: {data["data"]["id"]}\nУслуга: Lava Pay SBP \nСумма: {amount} р.\n🎩Ранг: {get_user_rank(call.message.chat.id)}\nСтатус: ✅Одобрено')
+                             f'Дата: {date}\nid: {call.message.chat.id}\nПользователь: {call.message.chat.username}\nНомер заявки: {data["data"]["id"]}\nУслуга: Lava Pay SBP \nСумма: {amount} р.\n🎩Ранг: {get_user_rank(call.message.chat.id)}\n💰 Баланс: {get_balans(call.message.chat.id)} ₽\nСтатус: ✅Одобрено')
             user_order_ids[call.message.chat.id] = ""
 
         elif status == "waiting":
@@ -4168,7 +4344,7 @@ def handle_callback_query(call):
             add_deposit(chat_id, amount, description='Пополнение через Lava')
             bot.send_message(call.message.chat.id, f"✅Ваш баланс пополнен на {amount2}₽ !")
             date = datetime.now().date().strftime('%d.%m.%Y')
-            send_to_archives(bot.send_message, f'Дата: {date}\nid: {chat_id}\nПользователь: {call.message.chat.username}\nНомер заявки: {payment_ids[chat_id]}\nУслуга: Nicepay \nСумма: {amount2} р.\n🎩Ранг: {get_user_rank(chat_id)}\nСтатус: ✅Одобрено')
+            send_to_archives(bot.send_message, f'Дата: {date}\nid: {chat_id}\nПользователь: {call.message.chat.username}\nНомер заявки: {payment_ids[chat_id]}\nУслуга: Nicepay \nСумма: {amount2} р.\n🎩Ранг: {get_user_rank(chat_id)}\n💰 Баланс: {get_balans(chat_id)} ₽\nСтатус: ✅Одобрено')
             payment_ids[chat_id] = None
             update_state(call.message, START)
         else:
@@ -4601,7 +4777,7 @@ def handle_callback_query(call):
                 usluga = f'Gift Cards. {gift}\nВалюта: {valuta}.\nEmail: {email}\nСумма в валюте: {value}'
                 number = to_arhiv(call.message.chat.id, usluga, int(value)*kurs)
                 bot.send_message(call.message.chat.id, f'✅Готово\nВаша заявка №<code>{number}</code> уже в обработке!', reply_markup = start_markup(chat_id), parse_mode="HTML")
-                bot.send_message(adminGroup, f'Заявка №{number}\nПользователь: @{call.message.chat.username} \nid: {call.message.chat.id}\nУслуга: {usluga}\n🎩Ранг: {get_user_rank(call.message.chat.id)}\nСумма: {int(value)*kurs}', reply_markup = admin_markup())
+                bot.send_message(adminGroup, f'Заявка №{number}\nПользователь: @{call.message.chat.username} \nid: {call.message.chat.id}\nУслуга: {usluga}\n🎩Ранг: {get_user_rank(call.message.chat.id)}\n💰 Баланс: {get_balans(call.message.chat.id)} ₽\nСумма: {int(value)*kurs}', reply_markup = admin_markup())
                 update_state(call.message, START)
             else:
                 update_state(call.message, START)
@@ -4654,6 +4830,7 @@ def handle_callback_query(call):
             json_data["eSIM сим-карты"]["Vodafone"] += 1
             inline_markup = types.InlineKeyboardMarkup(row_width=True)
             inline_markup.add(types.InlineKeyboardButton(f'{data["Vodafone"]["tariff_name"]}', callback_data="VodafoneTarif"))
+            inline_markup.add(types.InlineKeyboardButton(f'{data["VodafonePlus"]["tariff_name"]}', callback_data="VodafonePlusTarif"))
             bot.send_message(call.message.chat.id, 'Выберите тариф:', reply_markup=inline_markup)
             add_data('EsimOperator', text, call.message.chat.id)
         elif text == "Kievstar":
@@ -4672,7 +4849,7 @@ def handle_callback_query(call):
         with open("analytic_clicks_data.json", "w", encoding="utf-8") as json_file:
             json.dump(json_data, json_file, ensure_ascii=False, indent=4)
 
-    elif text == "VodafoneTarif" or text == "КиевстарTarif" or text == "LifecellTarif" or text == "FranceUnlimitedTarif" or text == "France35GBTarif":
+    elif text == "VodafoneTarif" or text == "VodafonePlusTarif" or text == "КиевстарTarif" or text == "LifecellTarif" or text == "FranceUnlimitedTarif" or text == "France35GBTarif":
         with open("esim.json", encoding="utf-8") as file:
             data = json.load(file)
         inline_markup = types.InlineKeyboardMarkup(row_width=True)
@@ -4718,7 +4895,7 @@ def handle_callback_query(call):
                     bot.send_photo(call.message.chat.id, photo, caption, reply_markup=inline_markup, caption_entities=ents)
                 else:
                     bot.send_photo(call.message.chat.id, photo, caption, reply_markup=inline_markup, parse_mode='HTML')
-        elif text in ["FranceUnlimitedTarif", "France35GBTarif"]:
+        elif text in ["FranceUnlimitedTarif", "France35GBTarif", "VodafonePlusTarif"]:
             operator = text.replace("Tarif", "")
             json_data = json.load(open("analytic_clicks_data.json", encoding="utf-8"))
             esim_stats = json_data.setdefault("eSIM сим-карты", {})
@@ -4742,7 +4919,7 @@ def handle_callback_query(call):
             else:
                 bot.send_message(call.message.chat.id, caption, reply_markup=inline_markup, parse_mode='HTML')
 
-    elif text in ["admin_Vodafone", "admin_Kievstar", "admin_Lifecell", "admin_FranceUnlimited", "admin_France35GB"]:
+    elif text in ["admin_Vodafone", "admin_VodafonePlus", "admin_Kievstar", "admin_Lifecell", "admin_FranceUnlimited", "admin_France35GB"]:
         inline_markup = types.InlineKeyboardMarkup(row_width=True)
         inline_markup.add(types.InlineKeyboardButton("Изменить название тарифа", callback_data="name_tariff"))
         inline_markup.add(types.InlineKeyboardButton("Изменить описание тарифа", callback_data="about_tariff"))
@@ -4768,13 +4945,33 @@ def handle_callback_query(call):
 
     elif text in ["image_tariff", "auto_tariff"]:
         eSIM_name = call.message.text.split()[-1]
-        if text == "auto_tariff":
-            bot.send_message(call.message.chat.id, f"Введите и отправьте изображение для автовыдачи\n\n⚠️ Отправляйте строго по одному фото", reply_markup=start_markup(chat_id, text='🚫 Отмена'))
-        if text == "image_tariff":
-            bot.send_message(call.message.chat.id, f"Отправьте изображение для тарифа", reply_markup=start_markup(chat_id, text='🚫 Отмена'))
         add_data("tariff_name", eSIM_name, call.message.chat.id)
-        add_data("esim_edit_method", text, call.message.chat.id)
-        update_state(call.message, ESIM_IMAGE_EDIT)
+        # --- ВВОД ДАННЫХ eSIM ЗАКОММЕНЧЕН: оставлен только ввод картинкой (как было) ---
+        # if text == "auto_tariff" and eSIM_name in _esim_pdf.TEMPLATES and _esim_pdf.TEMPLATES[eSIM_name].get("mode") == "fields":
+        #     # PDF-операторы с вставкой полей в шаблон (Kievstar): пошаговый ввод данных
+        #     add_data("esim_edit_method", "pdf_fields_tariff", call.message.chat.id)
+        #     fields = _esim_pdf.fields_for(eSIM_name)
+        #     add_data("pdf_fields_list", json.dumps(fields), call.message.chat.id)
+        #     add_data("pdf_fields_idx", "0", call.message.chat.id)
+        #     add_data("pdf_fields_values", "{}", call.message.chat.id)
+        #     bot.send_message(call.message.chat.id,
+        #         f"Добавление eSIM {eSIM_name} (по одному).\n\nВведите {fields[0][1]}:",
+        #         reply_markup=start_markup(chat_id, text='🚫 Отмена'))
+        #     update_state(call.message, ESIM_IMAGE_EDIT)
+        # elif text == "auto_tariff" and eSIM_name in _esim_pdf.TEMPLATES:
+        #     # PDF-операторы: фото eSIM-карты + ссылка активации
+        #     add_data("esim_edit_method", "pdf_photo_tariff", call.message.chat.id)
+        #     bot.send_message(call.message.chat.id,
+        #         f"Добавление eSIM {eSIM_name} (по одному).\n\nПришлите фото eSIM-карты:",
+        #         reply_markup=start_markup(chat_id, text='🚫 Отмена'))
+        #     update_state(call.message, ESIM_IMAGE_EDIT)
+        if True:
+            if text == "auto_tariff":
+                bot.send_message(call.message.chat.id, f"Введите и отправьте изображение для автовыдачи\n\n⚠️ Отправляйте строго по одному фото", reply_markup=start_markup(chat_id, text='🚫 Отмена'))
+            if text == "image_tariff":
+                bot.send_message(call.message.chat.id, f"Отправьте изображение для тарифа", reply_markup=start_markup(chat_id, text='🚫 Отмена'))
+            add_data("esim_edit_method", text, call.message.chat.id)
+            update_state(call.message, ESIM_IMAGE_EDIT)
 
     elif text in ["plan_Solo", "plan_Duo", "plan_FamilyMax"]:
 
@@ -4953,7 +5150,7 @@ id: {chat_id}
 🚗План: {plan}
 ⏳Срок: {months * 30} дн.
 💸Сумма: {price}р.
-🎩Ранг: {get_user_rank(chat_id)}
+🎩Ранг: {get_user_rank(chat_id)}\n💰 Баланс: {get_balans(chat_id)} ₽
 Пользователь: {chat_id}
         """
             bot.send_message(adminGroup, adm_msg, reply_markup=vpn_admin_markup(chat_id))
@@ -5164,12 +5361,12 @@ id: {chat_id}
         chat_id = call.message.chat.id
         username = call.message.chat.username
         data = get_trial_vpn(chat_id, username)
-        if "`" in data:
+        if "<code>" in data:
             bot.send_message(chat_id, f"""
 🔑 Ключ выдан на 2 дня (пробный доступ)
 📲 Подключить можно только 1 устройство.
 
-{data}""", parse_mode="Markdown")
+{data}""", parse_mode="HTML")
             update_state(call.message, START)
         elif data == "Nah":
             bot.send_message(chat_id, """
@@ -5183,7 +5380,7 @@ id: {chat_id}
     elif text == "esim_view_stock":
         with open("eSIM/esim_answer.json", encoding="utf-8") as file:
             esim_data = json.load(file)
-        operators = ["Vodafone", "Kievstar", "Lifecell", "FranceUnlimited", "France35GB"]
+        operators = ["Vodafone", "Kievstar", "Lifecell", "FranceUnlimited", "France35GB", "VodafonePlus"]
         has_any = False
         for operator in operators:
             entries = esim_data.get(operator, {})
@@ -5193,6 +5390,21 @@ id: {chat_id}
             bot.send_message(call.message.chat.id, f"📦 <b>{operator}</b> — {len(entries)} шт.", parse_mode="HTML")
             for idx, (key, entry) in enumerate(entries.items(), 1):
                 caption = f"#{idx} | {operator} | {entry.get('message_answer', '—')}"
+                if entry.get("pdf_fields"):
+                    pf = entry["pdf_fields"]
+                    lines = "\n".join(f"{k}: {v}" for k, v in pf.items())
+                    bot.send_message(call.message.chat.id, f"#{idx} | {operator} | 📄 PDF-eSIM\n{lines}")
+                    continue
+                if entry.get("pdf_photo"):
+                    pp = entry["pdf_photo"]
+                    photo_path = pp.get("photo_path")
+                    cap = f"#{idx} | {operator} | 📄 PDF-eSIM (фото)\nactivation_url: {pp.get('activation_url', '')}"
+                    if photo_path and os.path.exists(photo_path):
+                        with open(photo_path, "rb") as ph:
+                            bot.send_photo(call.message.chat.id, ph.read(), caption=cap)
+                    else:
+                        bot.send_message(call.message.chat.id, cap + "\n⚠️ Фото не найдено")
+                    continue
                 file_id = entry.get("file_id")
                 if file_id:
                     try:
@@ -5297,7 +5509,10 @@ id: {chat_id}
             mes = '❌Вы отклонили оплату'
             payment_ids[call.message.chat.id] = None
             bot.send_message(call.message.chat.id, mes, reply_markup=start_markup(call.message.chat.id))
-            bot.delete_message(chat_id=call.message.chat.id, message_id=call.message.message_id)
+            try:
+                bot.delete_message(chat_id=call.message.chat.id, message_id=call.message.message_id)
+            except Exception:
+                pass
             update_state(call.message, START)
 
 
@@ -5316,7 +5531,7 @@ id: {chat_id}
                 usluga = f'Пополнение баланса.\nСпособ оплаты: {sposob}'
                 number = to_arhiv(call.message.chat.id, usluga, summ)
                 mes = f'Заявка №{number}\n😉Ожидайте зачисления на баланс\n⌚️В крайних случаях деньги могут поступить в течении 24-х часов'
-                bot.send_message(adminGroup, f'Заявка №{number}\nПользователь: @{call.message.chat.username} \nid: {call.message.chat.id}\nУслуга: {usluga}\n🎩Ранг: {get_user_rank(call.message.chat.id)}\nСумма: {summ}', reply_markup = admin_markup())
+                bot.send_message(adminGroup, f'Заявка №{number}\nПользователь: @{call.message.chat.username} \nid: {call.message.chat.id}\nУслуга: {usluga}\n🎩Ранг: {get_user_rank(call.message.chat.id)}\n💰 Баланс: {get_balans(call.message.chat.id)} ₽\nСумма: {summ}', reply_markup = admin_markup())
                 bot.send_message(call.message.chat.id, mes, reply_markup=start_markup(call.message.chat.id))
                 bot.delete_message(chat_id=call.message.chat.id, message_id=call.message.message_id)
             elif sposob == "Payeer":
@@ -5634,7 +5849,7 @@ id: {chat_id}
                 f"📥 К получению: {to_receive} ₽"
             )
             bot.send_message(adminGroup,
-                             f'Заявка №{number}\nПользователь: @{call.message.chat.username} \nid: {call.message.chat.id}\nУслуга: Вывод средств Карта РФ\n🎩Ранг: {get_user_rank(call.message.chat.id)}\nНомер карты: {card}\n Банк: {get_bank_from_card(card)}\nСумма: {to_receive}\nБез комиссии: {amount}\nКомиссия: {commission}',
+                             f'Заявка №{number}\nПользователь: @{call.message.chat.username} \nid: {call.message.chat.id}\nУслуга: Вывод средств Карта РФ\n🎩Ранг: {get_user_rank(call.message.chat.id)}\n💰 Баланс: {get_balans(call.message.chat.id)} ₽\nНомер карты: {card}\n Банк: {get_bank_from_card(card)}\nСумма: {to_receive}\nБез комиссии: {amount}\nКомиссия: {commission}',
                              reply_markup=admin_withdraw_c())
         else:
             bot.send_message(
@@ -5670,7 +5885,7 @@ id: {chat_id}
                 f"📥 К получению: {to_receive} ₽"
             )
             bot.send_message(adminGroup,
-                             f'Заявка №{number}\nПользователь: @{call.message.chat.username} \nid: {call.message.chat.id}\nУслуга: Вывод средств СБП({bank})\n🎩Ранг: {get_user_rank(call.message.chat.id)}\nНомер: {phone}\n Банк: {bank}\nСумма с комсой: {to_receive} \n Сумма без комсы: {amount} \n Комиссия: {commission}',
+                             f'Заявка №{number}\nПользователь: @{call.message.chat.username} \nid: {call.message.chat.id}\nУслуга: Вывод средств СБП({bank})\n🎩Ранг: {get_user_rank(call.message.chat.id)}\n💰 Баланс: {get_balans(call.message.chat.id)} ₽\nНомер: {phone}\n Банк: {bank}\nСумма с комсой: {to_receive} \n Сумма без комсы: {amount} \n Комиссия: {commission}',
                              reply_markup=admin_withdraw())
         else:
             bot.send_message(
@@ -5797,7 +6012,7 @@ id: {chat_id}
                 f'📱Ваша заявка №<code>{number}</code>\n✅Успешно обработана!\n✅',
                 reply_markup=inline_markup, parse_mode="HTML")
         bot.delete_message(chat_id=call.message.chat.id, message_id=call.message.message_id)
-        send_to_archives(bot.send_message, f'Дата: {date}\nЗаявка №{number}\nПользователь: {user}\nid: {id}\nУслуга: Вывод средств СБП \nСумма: {sum + comm}\nСумма без комисии: {sum}\n🎩Ранг: {get_user_rank(id)}\nСтатус: ✅Одобрено\n\n Заявку закрыл(а): {call.from_user.username}')
+        send_to_archives(bot.send_message, f'Дата: {date}\nЗаявка №{number}\nПользователь: {user}\nid: {id}\nУслуга: Вывод средств СБП \nСумма: {sum + comm}\nСумма без комисии: {sum}\n🎩Ранг: {get_user_rank(id)}\n💰 Баланс: {get_balans(id)} ₽\nСтатус: ✅Одобрено\n\n Заявку закрыл(а): {call.from_user.username}')
         clear_user_temp(id)
     elif text == 'nogoodWH':
         print(call.message)
@@ -5812,7 +6027,7 @@ id: {chat_id}
         date = datetime.now().date().strftime('%d.%m.%Y')
         add_deposit(int(id), str(amount), description='Отмена вывода СБП (возврат)')
 
-        send_to_archives(bot.send_message, f'Дата: {date}\nЗаявка №{number}\nПользователь: {user}\nid: {id}\nУслуга: Вывод средств СБП \nСумма: {amount}\n🎩Ранг: {get_user_rank(id)}\nСтатус: ❌Отменено')
+        send_to_archives(bot.send_message, f'Дата: {date}\nЗаявка №{number}\nПользователь: {user}\nid: {id}\nУслуга: Вывод средств СБП \nСумма: {amount}\n🎩Ранг: {get_user_rank(id)}\n💰 Баланс: {get_balans(id)} ₽\nСтатус: ❌Отменено')
 
         clear_user_temp(id)
     elif text == "accepted_key":
@@ -5849,7 +6064,7 @@ id: {chat_id}
                          reply_markup=inline_markup, parse_mode="HTML")
         bot.delete_message(chat_id=call.message.chat.id, message_id=call.message.message_id)
         send_to_archives(bot.send_message,
-                         f'Дата: {date}\nЗаявка №{number}\nПользователь: {user}\nid: {id}\nУслуга: Вывод средств Карта РФ \nСумма: {sum + comm}\nСумма без комисии: {sum}\n🎩Ранг: {get_user_rank(id)}\nСтатус: ✅Одобрено\n\n Заявку закрыл(а): {call.from_user.username}')
+                         f'Дата: {date}\nЗаявка №{number}\nПользователь: {user}\nid: {id}\nУслуга: Вывод средств Карта РФ \nСумма: {sum + comm}\nСумма без комисии: {sum}\n🎩Ранг: {get_user_rank(id)}\n💰 Баланс: {get_balans(id)} ₽\nСтатус: ✅Одобрено\n\n Заявку закрыл(а): {call.from_user.username}')
         clear_user_temp(id)
     elif text == 'nogoodWHC':
         number = call.message.text.split('Заявка №')[1].split('\n')[0]
@@ -5865,7 +6080,7 @@ id: {chat_id}
         print(id, amount)
 
         send_to_archives(bot.send_message,
-                         f'Дата: {date}\nЗаявка №{number}\nПользователь: {user}\nid: {id}\nУслуга: Вывод средств Карта РФ \nСумма: {amount}\n🎩Ранг: {get_user_rank(id)}\nСтатус: ❌Отменено')
+                         f'Дата: {date}\nЗаявка №{number}\nПользователь: {user}\nid: {id}\nУслуга: Вывод средств Карта РФ \nСумма: {amount}\n🎩Ранг: {get_user_rank(id)}\n💰 Баланс: {get_balans(id)} ₽\nСтатус: ❌Отменено')
 
         clear_user_temp(id)
 
@@ -5959,24 +6174,24 @@ id: {chat_id}
                         try:
                             sum_bez_com = message_text_check.split('Сумма без комисии: ')[1].split('\n')[0]
                             with open(f"receipt_{id}.jpg", 'rb') as new_file:
-                                send_photo_to_archives(new_file.read(), caption=f'Дата: {date}\nЗаявка №{number}\nПользователь: {user}\nid: {id}\nУслуга: {usluga}\nСумма: {sum}\nСумма без комисии: {sum_bez_com}\n🎩Ранг: {get_user_rank(id)}\nСтатус: ✅Одобрено\n\n Заявку закрыл(а): {call.from_user.username}')
+                                send_photo_to_archives(new_file.read(), caption=f'Дата: {date}\nЗаявка №{number}\nПользователь: {user}\nid: {id}\nУслуга: {usluga}\nСумма: {sum}\nСумма без комисии: {sum_bez_com}\n🎩Ранг: {get_user_rank(id)}\n💰 Баланс: {get_balans(id)} ₽\nСтатус: ✅Одобрено\n\n Заявку закрыл(а): {call.from_user.username}')
                             os.remove(f"receipt_{id}.jpg")
                         except:
                             with open(f"receipt_{id}.jpg", 'rb') as new_file:
-                                send_photo_to_archives(new_file.read(), caption=f'Дата: {date}\nЗаявка №{number}\nПользователь: {user}\nid: {id}\nУслуга: {usluga}\nСумма: {sum}\n🎩Ранг: {get_user_rank(id)}\nСтатус: ✅Одобрено\n\n Заявку закрыл(а): {call.from_user.username}')
+                                send_photo_to_archives(new_file.read(), caption=f'Дата: {date}\nЗаявка №{number}\nПользователь: {user}\nid: {id}\nУслуга: {usluga}\nСумма: {sum}\n🎩Ранг: {get_user_rank(id)}\n💰 Баланс: {get_balans(id)} ₽\nСтатус: ✅Одобрено\n\n Заявку закрыл(а): {call.from_user.username}')
                             os.remove(f"receipt_{id}.jpg")
                     elif data_format == "pdf":
                         try:
                             sum_bez_com = message_text_check.split('Сумма без комисии: ')[1].split('\n')[0]
                             with open(f"receipt_{id}.pdf", 'rb') as new_file:
-                                send_document_to_archives(new_file.read(), caption=f'Дата: {date}\nЗаявка №{number}\nПользователь: {user}\nid: {id}\nУслуга: {usluga}\nСумма: {sum}\nСумма без комисии: {sum_bez_com}\n🎩Ранг: {get_user_rank(id)}\nСтатус: ✅Одобрено\n\n Заявку закрыл(а): {call.from_user.username}')
+                                send_document_to_archives(new_file.read(), caption=f'Дата: {date}\nЗаявка №{number}\nПользователь: {user}\nid: {id}\nУслуга: {usluga}\nСумма: {sum}\nСумма без комисии: {sum_bez_com}\n🎩Ранг: {get_user_rank(id)}\n💰 Баланс: {get_balans(id)} ₽\nСтатус: ✅Одобрено\n\n Заявку закрыл(а): {call.from_user.username}')
                             os.remove(f"receipt_{id}.pdf")
                         except:
                             with open(f"receipt_{id}.pdf", 'rb') as new_file:
-                                send_document_to_archives(new_file.read(), caption=f'Дата: {date}\nЗаявка №{number}\nПользователь: {user}\nid: {id}\nУслуга: {usluga}\nСумма: {sum}\n🎩Ранг: {get_user_rank(id)}\nСтатус: ✅Одобрено\n\n Заявку закрыл(а): {call.from_user.username}')
+                                send_document_to_archives(new_file.read(), caption=f'Дата: {date}\nЗаявка №{number}\nПользователь: {user}\nid: {id}\nУслуга: {usluga}\nСумма: {sum}\n🎩Ранг: {get_user_rank(id)}\n💰 Баланс: {get_balans(id)} ₽\nСтатус: ✅Одобрено\n\n Заявку закрыл(а): {call.from_user.username}')
                             os.remove(f"receipt_{id}.pdf")
                     else:
-                        send_message_to_archives(f'Дата: {date}\nЗаявка №{number}\nПользователь: {user}\nid: {id}\nУслуга: {usluga}\nСумма: {sum}\n🎩Ранг: {get_user_rank(id)}\nСтатус: ✅Одобрено\n\nЗаявку закрыл(а): {call.from_user.username}')
+                        send_message_to_archives(f'Дата: {date}\nЗаявка №{number}\nПользователь: {user}\nid: {id}\nУслуга: {usluga}\nСумма: {sum}\n🎩Ранг: {get_user_rank(id)}\n💰 Баланс: {get_balans(id)} ₽\nСтатус: ✅Одобрено\n\nЗаявку закрыл(а): {call.from_user.username}')
                 else:
                     bot.answer_callback_query(callback_query_id=call.id, text=f"Заявка №{number} одобрена")
                     inline_markup = types.InlineKeyboardMarkup(row_width=True)
@@ -5991,24 +6206,24 @@ id: {chat_id}
                         try:
                             sum_bez_com = message_text_check.split('Сумма без комисии: ')[1].split('\n')[0]
                             with open(f"receipt_{id}.jpg", 'rb') as new_file:
-                                send_photo_to_archives(new_file.read(), caption=f'Дата: {date}\nЗаявка №{number}\nПользователь: {user}\nid: {id}\nУслуга: {usluga}\nСумма: {sum}\nСумма без комисии: {sum_bez_com}\n🎩Ранг: {get_user_rank(id)}\nСтатус: ✅Одобрено\n\n Заявку закрыл(а): {call.from_user.username}')
+                                send_photo_to_archives(new_file.read(), caption=f'Дата: {date}\nЗаявка №{number}\nПользователь: {user}\nid: {id}\nУслуга: {usluga}\nСумма: {sum}\nСумма без комисии: {sum_bez_com}\n🎩Ранг: {get_user_rank(id)}\n💰 Баланс: {get_balans(id)} ₽\nСтатус: ✅Одобрено\n\n Заявку закрыл(а): {call.from_user.username}')
                             os.remove(f"receipt_{id}.jpg")
                         except:
                             with open(f"receipt_{id}.jpg", 'rb') as new_file:
-                                send_photo_to_archives(new_file.read(), caption=f'Дата: {date}\nЗаявка №{number}\nПользователь: {user}\nid: {id}\nУслуга: {usluga}\nСумма: {sum}\n🎩Ранг: {get_user_rank(id)}\nСтатус: ✅Одобрено\n\n Заявку закрыл(а): {call.from_user.username}')
+                                send_photo_to_archives(new_file.read(), caption=f'Дата: {date}\nЗаявка №{number}\nПользователь: {user}\nid: {id}\nУслуга: {usluga}\nСумма: {sum}\n🎩Ранг: {get_user_rank(id)}\n💰 Баланс: {get_balans(id)} ₽\nСтатус: ✅Одобрено\n\n Заявку закрыл(а): {call.from_user.username}')
                             os.remove(f"receipt_{id}.jpg")
                     elif data_format == "pdf":
                         try:
                             sum_bez_com = message_text_check.split('Сумма без комисии: ')[1].split('\n')[0]
                             with open(f"receipt_{id}.pdf", 'rb') as new_file:
-                                send_document_to_archives(new_file.read(), caption=f'Дата: {date}\nЗаявка №{number}\nПользователь: {user}\nid: {id}\nУслуга: {usluga}\nСумма: {sum}\nСумма без комисии: {sum_bez_com}\n🎩Ранг: {get_user_rank(id)}\nСтатус: ✅Одобрено\n\n Заявку закрыл(а): {call.from_user.username}')
+                                send_document_to_archives(new_file.read(), caption=f'Дата: {date}\nЗаявка №{number}\nПользователь: {user}\nid: {id}\nУслуга: {usluga}\nСумма: {sum}\nСумма без комисии: {sum_bez_com}\n🎩Ранг: {get_user_rank(id)}\n💰 Баланс: {get_balans(id)} ₽\nСтатус: ✅Одобрено\n\n Заявку закрыл(а): {call.from_user.username}')
                             os.remove(f"receipt_{id}.pdf")
                         except:
                             with open(f"receipt_{id}.pdf", 'rb') as new_file:
-                                send_document_to_archives(new_file.read(), caption=f'Дата: {date}\nЗаявка №{number}\nПользователь: {user}\nid: {id}\nУслуга: {usluga}\nСумма: {sum}\n🎩Ранг: {get_user_rank(id)}\nСтатус: ✅Одобрено\n\n Заявку закрыл(а): {call.from_user.username}')
+                                send_document_to_archives(new_file.read(), caption=f'Дата: {date}\nЗаявка №{number}\nПользователь: {user}\nid: {id}\nУслуга: {usluga}\nСумма: {sum}\n🎩Ранг: {get_user_rank(id)}\n💰 Баланс: {get_balans(id)} ₽\nСтатус: ✅Одобрено\n\n Заявку закрыл(а): {call.from_user.username}')
                             os.remove(f"receipt_{id}.pdf")
                     else:
-                        send_message_to_archives(f'Дата: {date}\nЗаявка №{number}\nПользователь: {user}\nid: {id}\nУслуга: {usluga}\nСумма: {sum}\n🎩Ранг: {get_user_rank(id)}\nСтатус: ✅Одобрено\n\nЗаявку закрыл(а): {call.from_user.username}')
+                        send_message_to_archives(f'Дата: {date}\nЗаявка №{number}\nПользователь: {user}\nid: {id}\nУслуга: {usluga}\nСумма: {sum}\n🎩Ранг: {get_user_rank(id)}\n💰 Баланс: {get_balans(id)} ₽\nСтатус: ✅Одобрено\n\nЗаявку закрыл(а): {call.from_user.username}')
 
             elif text == 'nogoodKom':
                 if not "Пополнение баланса" in usluga:
@@ -6027,14 +6242,14 @@ id: {chat_id}
                 date = datetime.now().date().strftime('%d.%m.%Y')
                 if data_format == "jpg":
                     with open(f"receipt_{id}.jpg", 'rb') as new_file:
-                        send_photo_to_archives(new_file.read(), caption=f'Дата: {date}\nЗаявка №{number}\nПользователь: {user}\nid: {id}\nУслуга: {usluga}\nСумма: {sum}\n🎩Ранг: {get_user_rank(id)}\nСтатус: ❌Отменено')
+                        send_photo_to_archives(new_file.read(), caption=f'Дата: {date}\nЗаявка №{number}\nПользователь: {user}\nid: {id}\nУслуга: {usluga}\nСумма: {sum}\n🎩Ранг: {get_user_rank(id)}\n💰 Баланс: {get_balans(id)} ₽\nСтатус: ❌Отменено')
                     os.remove(f"receipt_{id}.jpg")
                 elif data_format == "pdf":
                     with open(f"receipt_{id}.pdf", 'rb') as new_file:
-                        send_document_to_archives(new_file.read(), caption=f'Дата: {date}\nЗаявка №{number}\nПользователь: {user}\nid: {id}\nУслуга: {usluga}\nСумма: {sum}\n🎩Ранг: {get_user_rank(id)}\nСтатус: ❌Отменено')
+                        send_document_to_archives(new_file.read(), caption=f'Дата: {date}\nЗаявка №{number}\nПользователь: {user}\nid: {id}\nУслуга: {usluga}\nСумма: {sum}\n🎩Ранг: {get_user_rank(id)}\n💰 Баланс: {get_balans(id)} ₽\nСтатус: ❌Отменено')
                     os.remove(f"receipt_{id}.pdf")
                 else:
-                    send_message_to_archives(f'Дата: {date}\nЗаявка №{number}\nПользователь: {user}\nid: {id}\nУслуга: {usluga}\nСумма: {sum}\n🎩Ранг: {get_user_rank(id)}\nСтатус: ❌Отменено')
+                    send_message_to_archives(f'Дата: {date}\nЗаявка №{number}\nПользователь: {user}\nid: {id}\nУслуга: {usluga}\nСумма: {sum}\n🎩Ранг: {get_user_rank(id)}\n💰 Баланс: {get_balans(id)} ₽\nСтатус: ❌Отменено')
                 
         else:
             if "VPN" not in call.message.text:
@@ -6138,7 +6353,7 @@ id: {chat_id}
                         sebest = '—'
                         profit = '—'
                     ref_note = f'\n👥 Реферал: -{ua_ref_earned} ₽' if ua_ref_earned else ''
-                    send_to_archives(bot.send_message, f'Дата: {date}\nЗаявка №{number}\nПользователь: {user}\nid: {id}\nУслуга: {usluga}\nСумма в грн.: {sum_grn}\nСумма в руб.: {sum}\n💰Себестоимость: {sebest}\n📈Чистая прибыль: {profit}{ref_note}\n🎩Ранг: {get_user_rank(id)}\nСтатус: ✅Одобрено\n\n Заявку закрыл(а): {call.from_user.username}{_mod_balans_str}')
+                    send_to_archives(bot.send_message, f'Дата: {date}\nЗаявка №{number}\nПользователь: {user}\nid: {id}\nУслуга: {usluga}\nСумма в грн.: {sum_grn}\nСумма в руб.: {sum}\n💰Себестоимость: {sebest}\n📈Чистая прибыль: {profit}{ref_note}\n🎩Ранг: {get_user_rank(id)}\n💰 Баланс: {get_balans(id)} ₽\nСтатус: ✅Одобрено\n\n Заявку закрыл(а): {call.from_user.username}{_mod_balans_str}')
                 elif "Интернет" in usluga:
                     try:
                         cost_str = call.message.text.split('💰Себестоимость: ')[1].split('\n')[0]
@@ -6146,7 +6361,7 @@ id: {chat_id}
                         profit_line2 = f'\n💰Себестоимость: {cost_str}\n📈Чистая прибыль: {profit_str2}'
                     except Exception:
                         profit_line2 = ''
-                    send_to_archives(bot.send_message, f'Дата: {date}\nЗаявка №{number}\nПользователь: {user}\nid: {id}\nУслуга: {usluga}\nСумма: {sum}{profit_line2}\n🎩Ранг: {get_user_rank(id)}\nСтатус: ✅Одобрено\n\n Заявку закрыл(а): {call.from_user.username}{_mod_balans_str}')
+                    send_to_archives(bot.send_message, f'Дата: {date}\nЗаявка №{number}\nПользователь: {user}\nid: {id}\nУслуга: {usluga}\nСумма: {sum}{profit_line2}\n🎩Ранг: {get_user_rank(id)}\n💰 Баланс: {get_balans(id)} ₽\nСтатус: ✅Одобрено\n\n Заявку закрыл(а): {call.from_user.username}{_mod_balans_str}')
                 elif "Россия" in usluga:
                     try:
                         sum_bez_com = call.message.text.split('Сумма без комисии: ')[1].split('\n')[0]
@@ -6155,9 +6370,9 @@ id: {chat_id}
                     except Exception:
                         sum_bez_com = '—'
                         profit_str = ''
-                    send_to_archives(bot.send_message, f'Дата: {date}\nЗаявка №{number}\nПользователь: {user}\nid: {id}\nУслуга: {usluga}\nСумма: {sum}\nСумма без комисии: {sum_bez_com}{profit_str}\n🎩Ранг: {get_user_rank(id)}\nСтатус: ✅Одобрено\n\n Заявку закрыл(а): {call.from_user.username}{_mod_balans_str}')
+                    send_to_archives(bot.send_message, f'Дата: {date}\nЗаявка №{number}\nПользователь: {user}\nid: {id}\nУслуга: {usluga}\nСумма: {sum}\nСумма без комисии: {sum_bez_com}{profit_str}\n🎩Ранг: {get_user_rank(id)}\n💰 Баланс: {get_balans(id)} ₽\nСтатус: ✅Одобрено\n\n Заявку закрыл(а): {call.from_user.username}{_mod_balans_str}')
                 else:
-                    send_to_archives(bot.send_message, f'Дата: {date}\nЗаявка №{number}\nПользователь: {user}\nid: {id}\nУслуга: {usluga}\nСумма: {sum}\n🎩Ранг: {get_user_rank(id)}\nСтатус: ✅Одобрено\n\n Заявку закрыл(а): {call.from_user.username}{_mod_balans_str}')
+                    send_to_archives(bot.send_message, f'Дата: {date}\nЗаявка №{number}\nПользователь: {user}\nid: {id}\nУслуга: {usluga}\nСумма: {sum}\n🎩Ранг: {get_user_rank(id)}\n💰 Баланс: {get_balans(id)} ₽\nСтатус: ✅Одобрено\n\n Заявку закрыл(а): {call.from_user.username}{_mod_balans_str}')
             elif text == 'nogoodKom':
                 close_request(int(number))
                 if not "Пополнение баланса" in usluga:
@@ -6183,7 +6398,7 @@ id: {chat_id}
                         except Exception:
                             pass
                     date = datetime.now().date().strftime('%d.%m.%Y')
-                    send_to_archives(bot.send_message, f'Дата: {date}\nЗаявка №{number}\nПользователь: {user}\nid: {id}\nУслуга: {usluga}\nСумма: {sum}\n🎩Ранг: {get_user_rank(id)}\nСтатус: ❌Отменено\n\n Заявку закрыл(а): {call.from_user.username}')
+                    send_to_archives(bot.send_message, f'Дата: {date}\nЗаявка №{number}\nПользователь: {user}\nid: {id}\nУслуга: {usluga}\nСумма: {sum}\n🎩Ранг: {get_user_rank(id)}\n💰 Баланс: {get_balans(id)} ₽\nСтатус: ❌Отменено\n\n Заявку закрыл(а): {call.from_user.username}')
                 else:
                     bot.send_message(call.message.chat.id, f"Не нашел Заявку №{number}")
     elif text == 'good_with_mes':
@@ -6327,7 +6542,7 @@ id: {chat_id}
                 update_balanse(call.message.chat.id, 'sum')
                 update_total_spent(call.message.chat.id, float(summ))
                 bot.send_message(call.message.chat.id, f'✅Готово\nВаша заявка №<code>{number}</code> уже в обработке!', reply_markup = start_markup(call.message.chat.id), parse_mode="HTML")
-                bot.send_message(adminGroup, f'Заявка №{number}\nПользователь: @{call.message.chat.username} \nid: {call.message.chat.id}\nУслуга: {usluga}\n🎩Ранг: {get_user_rank(call.message.chat.id)}\nСумма: {summ}', reply_markup = admin_markup())
+                bot.send_message(adminGroup, f'Заявка №{number}\nПользователь: @{call.message.chat.username} \nid: {call.message.chat.id}\nУслуга: {usluga}\n🎩Ранг: {get_user_rank(call.message.chat.id)}\n💰 Баланс: {get_balans(call.message.chat.id)} ₽\nСумма: {summ}', reply_markup = admin_markup())
                 bot.delete_message(chat_id=call.message.chat.id, message_id=call.message.message_id)
             else:
                 update_state(call.message, START)
@@ -6380,7 +6595,7 @@ id: {chat_id}
         except Exception:
             profit_line_v = ''
         bot.send_message(adminGroup,
-                         f'Заявка №{number}\nПользователь: @{call.message.chat.username} \nid: {call.message.chat.id}\nУслуга: {usluga}\nСумма в грн.: {sum_uah}\n🎩Ранг: {get_user_rank(call.message.chat.id)}\nСумма: {sum_rub}{profit_line_v}',
+                         f'Заявка №{number}\nПользователь: @{call.message.chat.username} \nid: {call.message.chat.id}\nУслуга: {usluga}\nСумма в грн.: {sum_uah}\n🎩Ранг: {get_user_rank(call.message.chat.id)}\n💰 Баланс: {get_balans(call.message.chat.id)} ₽\nСумма: {sum_rub}{profit_line_v}',
                          reply_markup=admin_markup())
         bot.send_message(call.message.chat.id, f'✅Готово\nВаша заявка №<code>{number}</code> уже в обработке!',
                          reply_markup=start_markup(call.message.chat.id), parse_mode="HTML")
@@ -6476,7 +6691,7 @@ id: {chat_id}
                 profit_line = f'\n💰Себестоимость: {cost}₽ (курс {cost_rate})\n📈Чистая прибыль: {profit}₽'
             except Exception:
                 profit_line = ''
-            admin_msg = bot.send_message(adminGroup, f'Заявка №{number}\nПользователь: @{call.message.chat.username} \nid: {call.message.chat.id}\nУслуга: {usluga}\n🎩Ранг: {get_user_rank(call.message.chat.id)}\nСумма в грн.: {orig_suma}\nСумма: {suma}{profit_line}', reply_markup = admin_markup())
+            admin_msg = bot.send_message(adminGroup, f'Заявка №{number}\nПользователь: @{call.message.chat.username} \nid: {call.message.chat.id}\nУслуга: {usluga}\n🎩Ранг: {get_user_rank(call.message.chat.id)}\n💰 Баланс: {get_balans(call.message.chat.id)} ₽\nСумма в грн.: {orig_suma}\nСумма: {suma}{profit_line}', reply_markup = admin_markup())
             register_request(number, admin_msg.message_id, adminGroup)
             bot.send_message(call.message.chat.id, f'✅Готово\nВаша заявка №<code>{number}</code> уже в обработке!', reply_markup = start_markup(call.message.chat.id), parse_mode="HTML")
             bot.delete_message(chat_id=call.message.chat.id, message_id=call.message.message_id)
@@ -6512,7 +6727,7 @@ id: {chat_id}
             suma = get_par("sum", call.message.chat.id)
             sum_bez_com = get_par("sum_bez_com", call.message.chat.id)
             number = to_arhiv(call.message.chat.id, usluga, suma)
-            bot.send_message(adminGroup, f'Заявка №{number}\nПользователь: @{call.message.chat.username} \nid: {call.message.chat.id}\nУслуга: {usluga}\n🎩Ранг: {get_user_rank(call.message.chat.id)}\nСумма: {suma}\nСумма без комисии: {sum_bez_com}', reply_markup = admin_markup())
+            bot.send_message(adminGroup, f'Заявка №{number}\nПользователь: @{call.message.chat.username} \nid: {call.message.chat.id}\nУслуга: {usluga}\n🎩Ранг: {get_user_rank(call.message.chat.id)}\n💰 Баланс: {get_balans(call.message.chat.id)} ₽\nСумма: {suma}\nСумма без комисии: {sum_bez_com}', reply_markup = admin_markup())
             bot.send_message(call.message.chat.id, f'✅Готово\nВаша заявка №<code>{number}</code> уже в обработке!', reply_markup = start_markup(call.message.chat.id), parse_mode="HTML")
             bot.delete_message(chat_id=call.message.chat.id, message_id=call.message.message_id)
         else:
@@ -6548,7 +6763,7 @@ id: {chat_id}
             orig_suma = get_par("original_sum", call.message.chat.id)
             number = to_arhiv(call.message.chat.id, usluga, suma)
             # round(float(suma)/get_kurs("eur"),2)
-            bot.send_message(adminGroup, f'Заявка №{number}\nПользователь: @{call.message.chat.username} \nid: {call.message.chat.id}\nУслуга: {usluga}\n🎩Ранг: {get_user_rank(call.message.chat.id)}\nСумма в евро: {orig_suma}\nСумма: {suma}', reply_markup = admin_markup())
+            bot.send_message(adminGroup, f'Заявка №{number}\nПользователь: @{call.message.chat.username} \nid: {call.message.chat.id}\nУслуга: {usluga}\n🎩Ранг: {get_user_rank(call.message.chat.id)}\n💰 Баланс: {get_balans(call.message.chat.id)} ₽\nСумма в евро: {orig_suma}\nСумма: {suma}', reply_markup = admin_markup())
             bot.send_message(call.message.chat.id, f'✅Готово\nВаша заявка №<code>{number}</code> уже в обработке!', reply_markup = start_markup(call.message.chat.id), parse_mode="HTML")
             bot.delete_message(chat_id=call.message.chat.id, message_id=call.message.message_id)
         else:
@@ -6599,7 +6814,7 @@ id: {chat_id}
                 add_deposit(call.message.chat.id, summa)
                 bot.edit_message_reply_markup(chat_id = call.message.chat.id, message_id = call.message.message_id, reply_markup = '')
                 bot.send_message(call.message.chat.id, f"На ваш счет поступило {summa}")
-                send_to_archives(bot.send_message, f"Оплата через payok на сумму {summa}\nНомер заявки {id}\n🎩Ранг: {get_user_rank(id)}\n")
+                send_to_archives(bot.send_message, f"Оплата через payok на сумму {summa}\nНомер заявки {id}\n🎩Ранг: {get_user_rank(call.message.chat.id)}\n💰 Баланс: {get_balans(call.message.chat.id)} ₽\n💰 Баланс: {get_balans(call.message.chat.id)} ₽\n")
             elif response_data["status"] == "error":
                 bot.send_message(call.message.chat.id, "Возникла ошибка")
             else:
@@ -6632,7 +6847,7 @@ id: {chat_id}
                     promocode_summa = int(summa) + procent
                     add_deposit(call.message.chat.id, str(promocode_summa), description='Пополнение баланса')
                     bot.send_message(call.message.chat.id, f"На ваш счет поступило {promocode_summa}")
-                    send_to_archives(bot.send_message, f"Id пользователя: {call.message.chat.id}\nПользователь: @{call.message.chat.username}\nОплата через merchant на сумму: {summa}\n🎩Ранг: {get_user_rank(call.message.chat.id)}\nНомер заявки: {id}")
+                    send_to_archives(bot.send_message, f"Id пользователя: {call.message.chat.id}\nПользователь: @{call.message.chat.username}\nОплата через merchant на сумму: {summa}\n🎩Ранг: {get_user_rank(call.message.chat.id)}\n💰 Баланс: {get_balans(call.message.chat.id)} ₽\nНомер заявки: {id}")
                     data[promocode]["wasted_user"].append(call.message.chat.id)
                     with open("promocode.json", "w", encoding="utf-8") as file:
                         json.dump(data, file, ensure_ascii=False, indent=4)
@@ -6640,7 +6855,7 @@ id: {chat_id}
                 except:
                     add_deposit(call.message.chat.id, summa, description='Пополнение баланса')
                     bot.send_message(call.message.chat.id, f"На ваш счет поступило {summa}")
-                    send_to_archives(bot.send_message, f"Id пользователя: {call.message.chat.id}\nПользователь: @{call.message.chat.username}\nОплата через merchant на сумму: {summa}\n🎩Ранг: {get_user_rank(call.message.chat.id)}\nНомер заявки: {id}")
+                    send_to_archives(bot.send_message, f"Id пользователя: {call.message.chat.id}\nПользователь: @{call.message.chat.username}\nОплата через merchant на сумму: {summa}\n🎩Ранг: {get_user_rank(call.message.chat.id)}\n💰 Баланс: {get_balans(call.message.chat.id)} ₽\nНомер заявки: {id}")
                 bot.edit_message_reply_markup(chat_id = call.message.chat.id, message_id = call.message.message_id, reply_markup = '')
             elif payment_status == "PAID" or payment_status == "IN_PROGRESS":
                 bot.send_message(call.message.chat.id, "Платеж проверяется")
@@ -6699,7 +6914,7 @@ id: {chat_id}
             update_balanse(call.message.chat.id, 'sum')
             update_total_spent(call.message.chat.id, float(summ))
             bot.send_message(call.message.chat.id, f'✅Готово', reply_markup = start_markup(call.message.chat.id), parse_mode="HTML")
-            send_to_archives(bot.send_message, f"Номер заявки: {number}\nId пользователя: {call.message.chat.id}\nПользователь: @{call.message.chat.username}\nСумма: {summ}\n🎩Ранг: {get_user_rank(call.message.chat.id)}\nТовар: {usluga}")
+            send_to_archives(bot.send_message, f"Номер заявки: {number}\nId пользователя: {call.message.chat.id}\nПользователь: @{call.message.chat.username}\nСумма: {summ}\n🎩Ранг: {get_user_rank(call.message.chat.id)}\n💰 Баланс: {get_balans(call.message.chat.id)} ₽\nТовар: {usluga}")
             # bot.send_message(adminGroup, f'Заявка №{number}\nПользователь: @{call.message.chat.username} \nid: {call.message.chat.id}\nУслуга: {usluga}\nСумма: {summ}', reply_markup = admin_markup())
             bot.delete_message(chat_id=call.message.chat.id, message_id=call.message.message_id)
         else:
@@ -6950,7 +7165,7 @@ def handle_nogoodKom_comment(mess, comment, k, call):
             bot.delete_message(chat_id=k.chat.id, message_id=k.message_id)
             date = datetime.now().date().strftime('%d.%m.%Y')
             with open(f"receipt_{id}.jpg", 'rb') as new_file:
-                send_photo_to_archives(new_file.read(), caption=f'Дата: {date}\nЗаявка №{number}\nПользователь: {user}\nid: {id}\nУслуга: {usluga}\nСумма: {sum}\n🎩Ранг: {get_user_rank(id)}\nСтатус: ❌Отменено с коментарием\nКомментарий: {comment.text}\n\n Заявку закрыл(а): {call.from_user.username}')
+                send_photo_to_archives(new_file.read(), caption=f'Дата: {date}\nЗаявка №{number}\nПользователь: {user}\nid: {id}\nУслуга: {usluga}\nСумма: {sum}\n🎩Ранг: {get_user_rank(id)}\n💰 Баланс: {get_balans(id)} ₽\nСтатус: ❌Отменено с коментарием\nКомментарий: {comment.text}\n\n Заявку закрыл(а): {call.from_user.username}')
             os.remove(f"receipt_{id}.jpg")
         else:
             bot.send_message(mess.chat.id, f"Не нашел Заявку №{number}")
@@ -6968,7 +7183,7 @@ def handle_nogoodKom_comment(mess, comment, k, call):
             bot.delete_message(chat_id=comment.chat.id, message_id=comment.message_id)
             bot.delete_message(chat_id=k.chat.id, message_id=k.message_id)
             date = datetime.now().date().strftime('%d.%m.%Y')
-            send_to_archives(bot.send_message, f'Дата: {date}\nЗаявка №{number}\nПользователь: {user}\nid: {id}\nУслуга: {usluga}\nСумма: {sum}\n🎩Ранг: {get_user_rank(id)}\nСтатус: ❌Отменено с коментарием\nКомментарий: {comment.text}')
+            send_to_archives(bot.send_message, f'Дата: {date}\nЗаявка №{number}\nПользователь: {user}\nid: {id}\nУслуга: {usluga}\nСумма: {sum}\n🎩Ранг: {get_user_rank(id)}\n💰 Баланс: {get_balans(id)} ₽\nСтатус: ❌Отменено с коментарием\nКомментарий: {comment.text}')
         else:
             bot.send_message(mess.chat.id, f"Не нашел Заявку №{number}")
 
@@ -6994,7 +7209,7 @@ def handle_good_with_mes_comment(mess, comment, k, call):
         else:
             bot.send_message(id, f"📱Ваша заявка №<code>{number}</code>\n✅Успешно обработана!\nКомментарий: {comment.text}", parse_mode="HTML")
         date = datetime.now().date().strftime('%d.%m.%Y')
-        send_to_archives(bot.send_message, f'Дата: {date}\nЗаявка №{number}\nПользователь: {user}\nid: {id}\nУслуга: {usluga}\nСумма: {sum}\n🎩Ранг: {get_user_rank(id)}\nСтатус: ✅Одобрено\n\n Заявку закрыл(а): {call.from_user.username}')
+        send_to_archives(bot.send_message, f'Дата: {date}\nЗаявка №{number}\nПользователь: {user}\nid: {id}\nУслуга: {usluga}\nСумма: {sum}\n🎩Ранг: {get_user_rank(id)}\n💰 Баланс: {get_balans(id)} ₽\nСтатус: ✅Одобрено\n\n Заявку закрыл(а): {call.from_user.username}')
         bot.delete_message(chat_id=mess.chat.id, message_id=mess.message_id)
         bot.delete_message(chat_id=comment.chat.id, message_id=comment.message_id)
         bot.delete_message(chat_id=k.chat.id, message_id=k.message_id)
@@ -7295,7 +7510,7 @@ def get_text_messages(message):
             os.makedirs(os.path.join(BASE_DIR, "eSIM"), exist_ok=True)
             with open(esim_answer_path, "w", encoding="utf-8") as file:
                 json.dump({}, file)
-        operators = ["Vodafone", "Kievstar", "Lifecell", "FranceUnlimited", "France35GB"]
+        operators = ["Vodafone", "Kievstar", "Lifecell", "FranceUnlimited", "France35GB", "VodafonePlus"]
         count = []
         for operator in operators:
             if esim_data.get(operator):
@@ -7306,6 +7521,7 @@ def get_text_messages(message):
                 count.append(items)
         inline_markup = types.InlineKeyboardMarkup(row_width=True)
         inline_markup.add(types.InlineKeyboardButton(f"🔴 Vodafone ({count[0]})", callback_data="admin_Vodafone", icon_custom_emoji_id="5267292959182697142"))
+        inline_markup.add(types.InlineKeyboardButton(f"🔴 Vodafone+ ({count[5]})", callback_data="admin_VodafonePlus"))
         inline_markup.add(types.InlineKeyboardButton(f"🔵 Киевстар ({count[1]})", callback_data="admin_Kievstar", icon_custom_emoji_id="5267061554934723857"))
         inline_markup.add(types.InlineKeyboardButton(f"🟡 Lifecell ({count[2]})", callback_data="admin_Lifecell", icon_custom_emoji_id="5267284102960131913"))
         inline_markup.add(types.InlineKeyboardButton(f"🇫🇷 Франция безлимит ({count[3]})", callback_data="admin_FranceUnlimited"))
@@ -7434,7 +7650,7 @@ def get_text_messages(message):
     elif get_state(message) == DIALOG:
         inline_markup = types.InlineKeyboardMarkup(row_width=True)
         inline_markup.add(types.InlineKeyboardButton(text = "Ответить", callback_data="otvet"))
-        bot.send_message(adminGroup, f"Пользователь: @{message.chat.username} \n🎩Ранг: {get_user_rank(message.chat.id)}\nid: {message.chat.id}\nСообщение: {message.text}", reply_markup=inline_markup)
+        bot.send_message(adminGroup, f"Пользователь: @{message.chat.username} \n🎩Ранг: {get_user_rank(message.chat.id)}\n💰 Баланс: {get_balans(message.chat.id)} ₽\nid: {message.chat.id}\nСообщение: {message.text}", reply_markup=inline_markup)
     else:
         markup = start_markup(message.chat.id)
         bot.send_message(message.chat.id, "Выберите что нибудь", reply_markup = markup)
@@ -7470,4 +7686,3 @@ if __name__ == "__main__":
             print(f"[POLLING] Ошибка соединения: {e}. Перезапуск через 5 сек...")
             import time as _time
             _time.sleep(5)
-

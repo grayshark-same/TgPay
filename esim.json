@@ -1,8 +1,62 @@
 {
     "Vodafone": {
         "tariff_name": "❤️Vodafone Тариф Flexx Go",
-        "tariff": "📞 Vodafone «Тариф Vodafone Flexx Go»\n\n🔥 Стабильный интернет без ограничений\n\n🧑‍💻Условия :\n— ⚡️ 25 ГБ Интернета в Украине (Зоне СВО)\n— ✈️ 15 ГБ в роуминге (Заграницей)\n— 📞 500 мин звонков в Украине и в роуминге\n—  Абонплата:\n • первый месяц — ✅Оплачен\n • далее — 420 грн/мес\n • Списание — стандартное ежемесячное\n\n💰 Стоимость - 4000₽",
-        "price": "4000",
+        "tariff": "📞 Vodafone «Тариф Vodafone Flexx Go»\n\n🔥 Стабильный интернет без ограничений\n\n🧑‍💻Условия :\n— ⚡️ 25 ГБ Интернета в Украине (Зоне СВО)\n— ✈️ 15 ГБ в роуминге (Заграницей)\n— 📞 500 мин звонков в Украине и в роуминге\n—  Абонплата:\n • первый месяц — ✅Оплачен\n • далее — 420 грн/мес\n • Списание — стандартное ежемесячное\n\n💰 Стоимость - 5990₽",
+        "price": "5990",
+        "cost_uah": 200.0,
+        "tariff_answer": "Ваш eSIM",
+        "tariff_entities": [
+            {
+                "type": "custom_emoji",
+                "offset": 0,
+                "length": 2,
+                "url": null,
+                "user": null,
+                "language": null,
+                "custom_emoji_id": "5352562482508481505"
+            },
+            {
+                "type": "custom_emoji",
+                "offset": 138,
+                "length": 2,
+                "url": null,
+                "user": null,
+                "language": null,
+                "custom_emoji_id": "5361600266225326825"
+            },
+            {
+                "type": "custom_emoji",
+                "offset": 173,
+                "length": 2,
+                "url": null,
+                "user": null,
+                "language": null,
+                "custom_emoji_id": "5397735522598659551"
+            },
+            {
+                "type": "custom_emoji",
+                "offset": 318,
+                "length": 2,
+                "url": null,
+                "user": null,
+                "language": null,
+                "custom_emoji_id": "5316711376876485361"
+            },
+            {
+                "type": "bold",
+                "offset": 321,
+                "length": 17,
+                "url": null,
+                "user": null,
+                "language": null,
+                "custom_emoji_id": null
+            }
+        ]
+    },
+    "VodafonePlus": {
+        "tariff_name": "❤️Vodafone Тариф Flexx Go +",
+        "tariff": "📞 Vodafone «Тариф Vodafone Flexx Go»\n\n🔥 Стабильный интернет без ограничений\n\n🧑‍💻Условия :\n— ⚡️ 25 ГБ Интернета в Украине (Зоне СВО)\n— ✈️ 15 ГБ в роуминге (Заграницей)\n— 📞 500 мин звонков в Украине и в роуминге\n—  Абонплата:\n • первый месяц — ✅Оплачен\n • далее — 420 грн/мес\n • Списание — стандартное ежемесячное\n\n💰 Стоимость - 5990₽",
+        "price": "5990",
         "cost_uah": 200.0,
         "tariff_answer": "Ваш eSIM",
         "tariff_entities": [
