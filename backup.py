@@ -7,6 +7,7 @@
 """
 import os
 import sys
+import sqlite3
 import shutil
 from datetime import datetime
 
@@ -25,6 +26,19 @@ DB_FILES = [
 KEEP = 30  # сколько последних снапшотов хранить
 
 
+def backup_db_file(src, dest):
+    """Консистентный снапшот sqlite-файла через Online Backup API — в отличие от
+    простого copy2 корректно работает с WAL (не теряет ещё не закечкпоинченные
+    записи из *-wal и не ловит 'database is locked' на живой БД)."""
+    src_conn = sqlite3.connect(src)
+    dest_conn = sqlite3.connect(dest)
+    try:
+        src_conn.backup(dest_conn)
+    finally:
+        dest_conn.close()
+        src_conn.close()
+
+
 def snapshot():
     ts = datetime.now().strftime('%Y%m%d_%H%M%S')
     dest = os.path.join('backups', ts)
@@ -32,7 +46,7 @@ def snapshot():
     copied = []
     for f in DB_FILES:
         if os.path.exists(f):
-            shutil.copy2(f, os.path.join(dest, os.path.basename(f)))
+            backup_db_file(f, os.path.join(dest, os.path.basename(f)))
             copied.append(os.path.basename(f))
     print(f'snapshot -> {dest} ({len(copied)} файлов: {", ".join(copied)})')
     _rotate()
@@ -49,6 +63,7 @@ def _rotate():
 
 
 def send_to_archives():
+    import tempfile
     import telebot
     import pytz
     from dotenv import load_dotenv
@@ -56,8 +71,11 @@ def send_to_archives():
     bot = telebot.TeleBot(os.environ['BOT_TOKEN'])
     groups = [int(x) for x in os.environ['ARHIVE_GROUPS'].split(',')]
     cap = '🗄 Бэкап БД ' + datetime.now(pytz.timezone('Europe/Moscow')).strftime('%d.%m.%Y %H:%M МСК')
-    with open('files/users.db', 'rb') as f:
-        data = f.read()
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_db = os.path.join(tmp, 'users.db')
+        backup_db_file('files/users.db', tmp_db)
+        with open(tmp_db, 'rb') as f:
+            data = f.read()
     for gid in groups:
         try:
             bot.send_document(gid, data, visible_file_name='users.db', caption=cap)

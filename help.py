@@ -236,7 +236,7 @@ def withdraw_balance(id, amount):
     balance = row[0]
     if balance >= amount:
         print(f"DEBUG: amount = {amount}, balans = {balance}")
-        new_balance = balance - amount
+        new_balance = round(balance - amount, 2)
         cursor.execute(
             "UPDATE users SET balans = ? WHERE id = ?",
             (new_balance, id)
@@ -680,7 +680,7 @@ def update_balance(chat_id, amount):
     data = cursor.fetchone()
 
     if data is not None:
-        new_balance = data[0] + amount
+        new_balance = round(data[0] + amount, 2)
         cursor.execute('UPDATE users SET balans = ? WHERE id = ?', (new_balance, chat_id))
         now = datetime.now().strftime('%d.%m.%Y %H:%M:%S')
         cursor.execute(
@@ -867,14 +867,22 @@ def update_balanse(chat_id, key):
     cursor = db.cursor()
     cursor.execute('SELECT balans FROM users WHERE id = ?', (chat_id,))
     data = cursor.fetchone()
-    if data:
-        new_balance = data[0] - amount
-        cursor.execute('UPDATE users SET balans = ? WHERE id = ?', (new_balance, chat_id))
-        db.commit()
+    if not data:
         db.close()
-        return True
+        return False
+
+    current_balance = data[0] or 0
+    new_balance = current_balance - amount
+    if new_balance < 0:
+        print(f"Ошибка update_balanse: недостаточно средств для {chat_id} "
+              f"(баланс {current_balance}, списание {amount})")
+        db.close()
+        return False
+
+    cursor.execute('UPDATE users SET balans = ? WHERE id = ?', (round(new_balance, 2), chat_id))
+    db.commit()
     db.close()
-    return False
+    return True
 
 #Пополнение баланса
 def add_deposit(id, summ, description=None):
@@ -886,7 +894,7 @@ def add_deposit(id, summ, description=None):
         data = cursor.fetchone()
         summ = float(summ)
         if data:
-            value=float(summ)+data[0]
+            value = round(float(summ) + data[0], 2)
             cursor.execute('UPDATE users SET balans = ? WHERE id = ?', (value, id))
             now = datetime.now().strftime('%d.%m.%Y %H:%M:%S')
             if description is None:
@@ -911,7 +919,7 @@ def change_deposit(id, summ):
         cursor.execute(f'SELECT balans FROM users WHERE id = ?', (id,))
         data = cursor.fetchone()
         if data:
-            value = float(summ)
+            value = round(float(summ), 2)
             cursor.execute('UPDATE users SET balans = ? WHERE id = ?', (value, id))
             db.commit()
             db.close()

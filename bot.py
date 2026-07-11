@@ -162,6 +162,7 @@ def _extend_vpn_sub(tg_id, username, plan_months):
 
 db = sqlite3.connect('files/users.db')
 cursor = db.cursor()
+cursor.execute('PRAGMA journal_mode=WAL')
 cursor.execute('''
     CREATE TABLE IF NOT EXISTS users (
         id INTEGER NOT NULL,
@@ -214,6 +215,7 @@ db.close()
 
 arhive_db = sqlite3.connect('files/arhive.db')
 arhive_cursor = arhive_db.cursor()
+arhive_cursor.execute('PRAGMA journal_mode=WAL')
 arhive_cursor.execute('''
     CREATE TABLE IF NOT EXISTS uslugi (
         id INTEGER,
@@ -227,6 +229,7 @@ arhive_db.commit()
 arhive_db.close()
 
 donations_db = sqlite3.connect('files/donations.db')
+donations_db.cursor().execute('PRAGMA journal_mode=WAL')
 donations_db.cursor().execute('''
     CREATE TABLE IF NOT EXISTS donations (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -241,6 +244,7 @@ donations_db.close()
 
 mods_db = sqlite3.connect('files/mods.db')
 mods_cursor = mods_db.cursor()
+mods_cursor.execute('PRAGMA journal_mode=WAL')
 mods_cursor.execute('''
     CREATE TABLE IF NOT EXISTS mods (
         id INTEGER PRIMARY KEY,
@@ -251,6 +255,17 @@ mods_cursor.execute('''
 ''')
 mods_db.commit()
 mods_db.close()
+
+# Остальные БД без собственного DDL-блока при старте — просто переводим в WAL,
+# если файл уже существует (journal_mode хранится в самом файле, достаточно один раз).
+for _wal_db_path in ('files/otzivi.db', 'files/cards.db', 'files/codes.db', 'files/penalties.db'):
+    if os.path.exists(_wal_db_path):
+        try:
+            _wal_conn = sqlite3.connect(_wal_db_path)
+            _wal_conn.execute('PRAGMA journal_mode=WAL')
+            _wal_conn.close()
+        except Exception as _wal_e:
+            print(f'[WAL] Не удалось включить WAL для {_wal_db_path}: {_wal_e}')
 
 
 # Настройка карточек отзывов
@@ -370,6 +385,49 @@ Nicepay = True
 adminGroup = int(os.environ["ADMIN_GROUP"])
 arhiveGroups = [int(x) for x in os.environ["ARHIVE_GROUPS"].split(",")]
 
+# --- Технические работы: /tech_work (только админы) включает/выключает плашку для юзеров ---
+TECH_WORK_FILE = 'tech_work.json'
+TECH_WORK_TEXT = '🔧 Технические работы. Бот временно недоступен.'
+
+def is_tech_work():
+    try:
+        with open(TECH_WORK_FILE, encoding='utf-8') as f:
+            return bool(json.load(f).get('enabled', False))
+    except Exception:
+        return False
+
+def set_tech_work(enabled):
+    with open(TECH_WORK_FILE, 'w', encoding='utf-8') as f:
+        json.dump({'enabled': enabled}, f)
+
+@bot.message_handler(commands=['tech_work'])
+def tech_work_toggle(message):
+    if message.chat.id not in admins:
+        return
+    new_state = not is_tech_work()
+    set_tech_work(new_state)
+    status = '🔧 ВКЛЮЧЕНЫ' if new_state else '✅ ВЫКЛЮЧЕНЫ'
+    for admin_id in admins:
+        try:
+            bot.send_message(admin_id, f'Технические работы {status}')
+        except Exception as e:
+            print(f'[tech_work] Ошибка уведомления админа {admin_id}: {e}')
+
+# Гейт зарегистрирован раньше всех остальных handler'ов — telebot вызывает первый
+# подходящий по filters и останавливается, поэтому пока техработы включены и юзер
+# не админ, дальше этот апдейт не уходит ни в один другой handler.
+@bot.message_handler(
+    func=lambda m: is_tech_work() and m.chat.id not in admins,
+    content_types=['text', 'photo', 'document', 'voice', 'video', 'video_note',
+                    'audio', 'sticker', 'location', 'contact', 'animation']
+)
+def tech_work_block_messages(message):
+    bot.send_message(message.chat.id, TECH_WORK_TEXT)
+
+@bot.callback_query_handler(func=lambda call: is_tech_work() and call.message.chat.id not in admins)
+def tech_work_block_callbacks(call):
+    bot.answer_callback_query(call.id, TECH_WORK_TEXT, show_alert=True)
+
 def _daily_db_backup_loop():
     """Ежедневно в 15:00 МСК отправляет users.db в архивные группы."""
     import time as _time
@@ -383,8 +441,20 @@ def _daily_db_backup_loop():
         _time.sleep(max(1, (target - now).total_seconds()))
         cap = f'🗄 Бэкап БД {_dt.now(tz).strftime("%d.%m.%Y %H:%M МСК")}'
         try:
-            with open('files/users.db', 'rb') as f:
-                data = f.read()
+            # Простое чтение файла может унести неполные данные из-за WAL —
+            # снимаем консистентную копию через sqlite Online Backup API.
+            import tempfile as _tempfile
+            with _tempfile.TemporaryDirectory() as _tmp:
+                _tmp_db = os.path.join(_tmp, 'users.db')
+                _src_conn = sqlite3.connect('files/users.db')
+                _dst_conn = sqlite3.connect(_tmp_db)
+                try:
+                    _src_conn.backup(_dst_conn)
+                finally:
+                    _dst_conn.close()
+                    _src_conn.close()
+                with open(_tmp_db, 'rb') as f:
+                    data = f.read()
         except Exception as e:
             print(f'[db_backup] read error: {e}')
             continue
@@ -1164,12 +1234,15 @@ def esim_reply_photo_handler(message):
             with open("eSIM/esim_pending.json", "w", encoding="utf-8") as pf:
                 json.dump(pending_data, pf, ensure_ascii=False, indent=4)
             if pending_entry:
+                _pb, _pa = pending_entry.get("balance_before"), pending_entry.get("balance_after")
+                _bal_line = f'\n💰 Баланс: {_pb} → {_pa} ₽' if _pb is not None else ''
                 archive_caption = (
                     f'Заявка №{number_c}\n'
                     f'Пользователь: @{pending_entry.get("username")}\n'
                     f'id: {pending_entry.get("user_id")}\n\n'
                     f'Услуга: Esim {pending_entry.get("operator")}\n'
                     f'🎩Ранг: {pending_entry.get("rank")}'
+                    f'{_bal_line}'
                     f'{pending_entry.get("profit_block", "")}'
                 )
                 send_photo_to_archives(downloaded, caption=archive_caption)
@@ -1222,12 +1295,15 @@ def esim_manual_send_handler(message):
             with open("eSIM/esim_pending.json", "w", encoding="utf-8") as pf:
                 json.dump(pending_data, pf, ensure_ascii=False, indent=4)
             if pending_entry:
+                _pb, _pa = pending_entry.get("balance_before"), pending_entry.get("balance_after")
+                _bal_line = f'\n💰 Баланс: {_pb} → {_pa} ₽' if _pb is not None else ''
                 archive_caption = (
                     f'Заявка №{number_c}\n'
                     f'Пользователь: @{pending_entry.get("username")}\n'
                     f'id: {pending_entry.get("user_id")}\n\n'
                     f'Услуга: Esim {pending_entry.get("operator")}\n'
                     f'🎩Ранг: {pending_entry.get("rank")}'
+                    f'{_bal_line}'
                     f'{pending_entry.get("profit_block", "")}'
                 )
                 send_photo_to_archives(downloaded, caption=archive_caption)
@@ -1438,21 +1514,21 @@ def get_phone(message):
     else:
         if message.text.isdigit():
             if 100<=int(message.text)<= 50000:
-                if float(get_balans(message.chat.id))-(float(message.text)+(float(message.text)*0.2))>=0:
-                    markup = start_markup(message.chat.id)
-                    summ = float(message.text)+(float(message.text)*0.2)
-                    add_data('inet_sum', summ, message.chat.id)
-                    if update_balanse(message.chat.id, 'inet_sum'):
-                        
-                        update_total_spent(message.chat.id, float(summ))
-                        usluga = f'Интернет RostNet.\nЛогин: {get_par("inet_login", message.chat.id)}.'
-                        number = to_arhiv(message.chat.id, usluga, summ)
-                        bot.send_message(message.chat.id, f'✅Готово\nВаша заявка №<code>{number}</code> уже в обработке!', reply_markup = markup, parse_mode="HTML")
-                        cost = float(message.text)
-                        profit = round(summ - cost, 2)
-                        profit_line = f'\n💰Себестоимость: {cost}₽\n📈Чистая прибыль: {profit}₽'
-                        bot.send_message(adminGroup, f'Заявка №{number}\nПользователь: @{message.chat.username} \nid: {message.chat.id}\nУслуга: {usluga}\n🎩Ранг: {get_user_rank(message.chat.id)}\n💰 Баланс: {get_balans(message.chat.id)} ₽\nСумма: {summ}{profit_line}', reply_markup = admin_markup())
-                        update_state(message, START)
+                markup = start_markup(message.chat.id)
+                summ = float(message.text)+(float(message.text)*0.2)
+                add_data('inet_sum', summ, message.chat.id)
+                balance_before = get_balans(message.chat.id)
+                if update_balanse(message.chat.id, 'inet_sum'):
+                    balance_after = get_balans(message.chat.id)
+                    update_total_spent(message.chat.id, float(summ))
+                    usluga = f'Интернет RostNet.\nЛогин: {get_par("inet_login", message.chat.id)}.'
+                    number = to_arhiv(message.chat.id, usluga, summ)
+                    bot.send_message(message.chat.id, f'✅Готово\nВаша заявка №<code>{number}</code> уже в обработке!', reply_markup = markup, parse_mode="HTML")
+                    cost = float(message.text)
+                    profit = round(summ - cost, 2)
+                    profit_line = f'\n💰Себестоимость: {cost}₽\n📈Чистая прибыль: {profit}₽'
+                    bot.send_message(adminGroup, f'Заявка №{number}\nПользователь: @{message.chat.username} \nid: {message.chat.id}\nУслуга: {usluga}\n🎩Ранг: {get_user_rank(message.chat.id)}\n💰 Баланс: {balance_before} → {balance_after} ₽\nСумма: {summ}{profit_line}', reply_markup = admin_markup())
+                    update_state(message, START)
                 else:
                     update_state(message, START)
                     bot.send_message(message.chat.id, 'Недостаточно средств', reply_markup = start_markup(message.chat.id))
@@ -2644,12 +2720,15 @@ def _try_deliver_pending_esim(operator):
             json.dump(pending_data, pf, ensure_ascii=False, indent=4)
         # Отправляем в архив
         try:
+            _pb, _pa = pending_user.get("balance_before"), pending_user.get("balance_after")
+            _bal_line = f'\n💰 Баланс: {_pb} → {_pa} ₽' if _pb is not None else ''
             archive_caption = (
                 f'Заявка №{number}\n'
                 f'Пользователь: @{pending_user.get("username")}\n'
                 f'id: {user_id}\n\n'
                 f'Услуга: Esim {operator}\n'
                 f'🎩Ранг: {pending_user.get("rank", "")}'
+                f'{_bal_line}'
                 f'{pending_user.get("profit_block", "")}'
             )
             if esim_file_id:
@@ -2770,7 +2849,15 @@ def _do_esim_buy(message, qty):
 
     user_type_before = get_user_type(chat_id)
     add_data('sum', str(total_summa), chat_id)
-    update_balanse(chat_id, 'sum')
+    balance_before = get_balans(chat_id)
+    if not update_balanse(chat_id, 'sum'):
+        update_state(message, START)
+        bot.send_message(chat_id, 'Недостаточно средств', reply_markup=start_markup(chat_id))
+        inline_topup = types.InlineKeyboardMarkup(row_width=True)
+        inline_topup.add(types.InlineKeyboardButton("Пополнить баланс", callback_data="add_balanse"))
+        bot.send_message(chat_id, 'Пополните баланс', reply_markup=inline_topup)
+        return
+    balance_after = get_balans(chat_id)
     referer = get_ref_user(chat_id)
     esim_ref_earned = 0
     if referer:
@@ -2818,12 +2905,12 @@ def _do_esim_buy(message, qty):
         profit_block = f'\n\n💰 Продажа: {summa_per} ₽'
 
     update_state(message, START)
-    _deliver_esim_units(chat_id, message.chat.username or '', operator, qty, summa_per, profit_block)
+    _deliver_esim_units(chat_id, message.chat.username or '', operator, qty, summa_per, profit_block, balance_before)
     # ежемесячная абонплата спишется с баланса по курсу (первый месяц — в цене eSIM)
     _esim_sub.register(chat_id, operator)
 
 
-def _deliver_esim_units(chat_id, username, operator, qty, summa_per, profit_block):
+def _deliver_esim_units(chat_id, username, operator, qty, summa_per, profit_block, balance_before=None):
     """Выдать qty eSIM из стока, недостающие — поставить в очередь на ручную выдачу."""
     with open("eSIM/esim_answer.json", encoding="utf-8") as file:
         esim_data = json.load(file)
@@ -2872,9 +2959,10 @@ def _deliver_esim_units(chat_id, username, operator, qty, summa_per, profit_bloc
                     pass
                 if pdf_photo and pdf_photo.get("photo_path") and os.path.exists(pdf_photo["photo_path"]):
                     os.remove(pdf_photo["photo_path"])
+                _bal_str = f'{balance_before} → {get_balans(chat_id)}' if balance_before is not None else str(get_balans(chat_id))
                 send_to_archives(bot.send_message,
                     f'Заявка №{number}\nПользователь: @{username}\nid: {chat_id}\n\n'
-                    f'Услуга: Esim {operator} (PDF)\n🎩Ранг: {get_user_rank(chat_id)}\n💰 Баланс: {get_balans(chat_id)} ₽{profit_block}',
+                    f'Услуга: Esim {operator} (PDF)\n🎩Ранг: {get_user_rank(chat_id)}\n💰 Баланс: {_bal_str} ₽{profit_block}',
                     parse_mode='HTML')
                 del esim_data[operator][esim_key]
                 with open("eSIM/esim_answer.json", "w", encoding="utf-8") as file:
@@ -2894,9 +2982,10 @@ def _deliver_esim_units(chat_id, username, operator, qty, summa_per, profit_bloc
                 with open(image, "rb") as photo:
                     photo_bytes = photo.read()
                 bot.send_photo(chat_id, photo_bytes, caption=esim_caption)
+            _bal_str = f'{balance_before} → {get_balans(chat_id)}' if balance_before is not None else str(get_balans(chat_id))
             archive_caption = (
                 f'Заявка №{number}\nПользователь: @{username} \nid: {chat_id}\n\n'
-                f'Услуга: Esim {operator}\n🎩Ранг: {get_user_rank(chat_id)}\n💰 Баланс: {get_balans(chat_id)} ₽{profit_block}'
+                f'Услуга: Esim {operator}\n🎩Ранг: {get_user_rank(chat_id)}\n💰 Баланс: {_bal_str} ₽{profit_block}'
             )
             if esim_file_id:
                 file_info = bot.get_file(esim_file_id)
@@ -2936,7 +3025,9 @@ def _deliver_esim_units(chat_id, username, operator, qty, summa_per, profit_bloc
             "summa": str(summa_per),
             "operator": operator,
             "rank": get_user_rank(chat_id),
-            "profit_block": profit_block
+            "profit_block": profit_block,
+            "balance_before": balance_before,
+            "balance_after": get_balans(chat_id)
         })
         with open("eSIM/esim_pending.json", "w", encoding="utf-8") as pf:
             json.dump(pending_data, pf, ensure_ascii=False, indent=4)
@@ -4769,15 +4860,16 @@ def handle_callback_query(call):
                 valuta = 'TRY'
                 kurs = get_kurs('try')
             value = get_par("value", chat_id)
-            if float(get_balans(call.message.chat.id))-float(int(value)*kurs)>=0:
+            add_data('sum', str(int(value)*kurs), call.message.chat.id)
+            balance_before = get_balans(call.message.chat.id)
+            if update_balanse(call.message.chat.id, 'sum'):
+                balance_after = get_balans(call.message.chat.id)
                 email = get_par("email", chat_id)
-                add_data('sum', str(int(value)*kurs), call.message.chat.id)
-                update_balanse(call.message.chat.id, 'sum')
                 update_total_spent(call.message.chat.id, float(int(value)*kurs))
                 usluga = f'Gift Cards. {gift}\nВалюта: {valuta}.\nEmail: {email}\nСумма в валюте: {value}'
                 number = to_arhiv(call.message.chat.id, usluga, int(value)*kurs)
                 bot.send_message(call.message.chat.id, f'✅Готово\nВаша заявка №<code>{number}</code> уже в обработке!', reply_markup = start_markup(chat_id), parse_mode="HTML")
-                bot.send_message(adminGroup, f'Заявка №{number}\nПользователь: @{call.message.chat.username} \nid: {call.message.chat.id}\nУслуга: {usluga}\n🎩Ранг: {get_user_rank(call.message.chat.id)}\n💰 Баланс: {get_balans(call.message.chat.id)} ₽\nСумма: {int(value)*kurs}', reply_markup = admin_markup())
+                bot.send_message(adminGroup, f'Заявка №{number}\nПользователь: @{call.message.chat.username} \nid: {call.message.chat.id}\nУслуга: {usluga}\n🎩Ранг: {get_user_rank(call.message.chat.id)}\n💰 Баланс: {balance_before} → {balance_after} ₽\nСумма: {int(value)*kurs}', reply_markup = admin_markup())
                 update_state(call.message, START)
             else:
                 update_state(call.message, START)
@@ -5143,19 +5235,20 @@ def handle_callback_query(call):
         months = get_user_data(chat_id, "months")
         price = get_user_data(chat_id, "price")
         bot.delete_message(chat_id, message_id)
-        if float(get_balans(chat_id)) >= float(price):
-            adm_msg = f"""  
+        add_data('sum', str(price), chat_id)
+        balance_before = get_balans(chat_id)
+        if update_balanse(chat_id, 'sum'):
+            balance_after = get_balans(chat_id)
+            adm_msg = f"""
 Услуга: Покупка VPN
 id: {chat_id}
 🚗План: {plan}
 ⏳Срок: {months * 30} дн.
 💸Сумма: {price}р.
-🎩Ранг: {get_user_rank(chat_id)}\n💰 Баланс: {get_balans(chat_id)} ₽
+🎩Ранг: {get_user_rank(chat_id)}\n💰 Баланс: {balance_before} → {balance_after} ₽
 Пользователь: {chat_id}
         """
             bot.send_message(adminGroup, adm_msg, reply_markup=vpn_admin_markup(chat_id))
-            add_data('sum', str(price), chat_id)
-            update_balanse(chat_id, 'sum')
             update_total_spent(call.message.chat.id, float(price))
 
             #bot.send_message(chat_id,
@@ -6315,6 +6408,14 @@ id: {chat_id}
                             _mod_balans_str += f'\n💼 На руках у модератора: {_remain}₴'
                 except Exception:
                     pass
+                # Баланс до→после списания уже показан в исходном сообщении заявки (на момент
+                # создания) — переиспользуем его, а не запрашиваем текущий баланс заново:
+                # к моменту закрытия заявки модератором он мог уже измениться другими операциями.
+                try:
+                    _bal_line_val = call.message.text.split('💰 Баланс: ')[1].split(' ₽')[0]
+                except Exception:
+                    _bal_line_val = str(get_balans(id))
+
                 inline_markup = types.InlineKeyboardMarkup(row_width=True)
                 inline_markup.add(types.InlineKeyboardButton(text = "⬆️ Оставить отзыв", callback_data = 'send_feedback'))
                 if "Пополнение баланса" in usluga:
@@ -6353,7 +6454,7 @@ id: {chat_id}
                         sebest = '—'
                         profit = '—'
                     ref_note = f'\n👥 Реферал: -{ua_ref_earned} ₽' if ua_ref_earned else ''
-                    send_to_archives(bot.send_message, f'Дата: {date}\nЗаявка №{number}\nПользователь: {user}\nid: {id}\nУслуга: {usluga}\nСумма в грн.: {sum_grn}\nСумма в руб.: {sum}\n💰Себестоимость: {sebest}\n📈Чистая прибыль: {profit}{ref_note}\n🎩Ранг: {get_user_rank(id)}\n💰 Баланс: {get_balans(id)} ₽\nСтатус: ✅Одобрено\n\n Заявку закрыл(а): {call.from_user.username}{_mod_balans_str}')
+                    send_to_archives(bot.send_message, f'Дата: {date}\nЗаявка №{number}\nПользователь: {user}\nid: {id}\nУслуга: {usluga}\nСумма в грн.: {sum_grn}\nСумма в руб.: {sum}\n💰Себестоимость: {sebest}\n📈Чистая прибыль: {profit}{ref_note}\n🎩Ранг: {get_user_rank(id)}\n💰 Баланс: {_bal_line_val} ₽\nСтатус: ✅Одобрено\n\n Заявку закрыл(а): {call.from_user.username}{_mod_balans_str}')
                 elif "Интернет" in usluga:
                     try:
                         cost_str = call.message.text.split('💰Себестоимость: ')[1].split('\n')[0]
@@ -6361,7 +6462,7 @@ id: {chat_id}
                         profit_line2 = f'\n💰Себестоимость: {cost_str}\n📈Чистая прибыль: {profit_str2}'
                     except Exception:
                         profit_line2 = ''
-                    send_to_archives(bot.send_message, f'Дата: {date}\nЗаявка №{number}\nПользователь: {user}\nid: {id}\nУслуга: {usluga}\nСумма: {sum}{profit_line2}\n🎩Ранг: {get_user_rank(id)}\n💰 Баланс: {get_balans(id)} ₽\nСтатус: ✅Одобрено\n\n Заявку закрыл(а): {call.from_user.username}{_mod_balans_str}')
+                    send_to_archives(bot.send_message, f'Дата: {date}\nЗаявка №{number}\nПользователь: {user}\nid: {id}\nУслуга: {usluga}\nСумма: {sum}{profit_line2}\n🎩Ранг: {get_user_rank(id)}\n💰 Баланс: {_bal_line_val} ₽\nСтатус: ✅Одобрено\n\n Заявку закрыл(а): {call.from_user.username}{_mod_balans_str}')
                 elif "Россия" in usluga:
                     try:
                         sum_bez_com = call.message.text.split('Сумма без комисии: ')[1].split('\n')[0]
@@ -6370,9 +6471,9 @@ id: {chat_id}
                     except Exception:
                         sum_bez_com = '—'
                         profit_str = ''
-                    send_to_archives(bot.send_message, f'Дата: {date}\nЗаявка №{number}\nПользователь: {user}\nid: {id}\nУслуга: {usluga}\nСумма: {sum}\nСумма без комисии: {sum_bez_com}{profit_str}\n🎩Ранг: {get_user_rank(id)}\n💰 Баланс: {get_balans(id)} ₽\nСтатус: ✅Одобрено\n\n Заявку закрыл(а): {call.from_user.username}{_mod_balans_str}')
+                    send_to_archives(bot.send_message, f'Дата: {date}\nЗаявка №{number}\nПользователь: {user}\nid: {id}\nУслуга: {usluga}\nСумма: {sum}\nСумма без комисии: {sum_bez_com}{profit_str}\n🎩Ранг: {get_user_rank(id)}\n💰 Баланс: {_bal_line_val} ₽\nСтатус: ✅Одобрено\n\n Заявку закрыл(а): {call.from_user.username}{_mod_balans_str}')
                 else:
-                    send_to_archives(bot.send_message, f'Дата: {date}\nЗаявка №{number}\nПользователь: {user}\nid: {id}\nУслуга: {usluga}\nСумма: {sum}\n🎩Ранг: {get_user_rank(id)}\n💰 Баланс: {get_balans(id)} ₽\nСтатус: ✅Одобрено\n\n Заявку закрыл(а): {call.from_user.username}{_mod_balans_str}')
+                    send_to_archives(bot.send_message, f'Дата: {date}\nЗаявка №{number}\nПользователь: {user}\nid: {id}\nУслуга: {usluga}\nСумма: {sum}\n🎩Ранг: {get_user_rank(id)}\n💰 Баланс: {_bal_line_val} ₽\nСтатус: ✅Одобрено\n\n Заявку закрыл(а): {call.from_user.username}{_mod_balans_str}')
             elif text == 'nogoodKom':
                 close_request(int(number))
                 if not "Пополнение баланса" in usluga:
@@ -6535,14 +6636,15 @@ id: {chat_id}
     elif text == 'akk_ok' or text == 'akk_cancel':
         if text == 'akk_ok':
             summ = int(call.message.text.split('на оплату в сумме ')[1].split('₽')[0])
-            if float(get_balans(call.message.chat.id))-float(summ)>=0:
+            add_data('sum', summ, call.message.chat.id)
+            balance_before = get_balans(call.message.chat.id)
+            if update_balanse(call.message.chat.id, 'sum'):
+                balance_after = get_balans(call.message.chat.id)
                 number = int(call.message.text.split('Заявка №')[1].split('\n')[0])
                 usluga = call.message.text.split('Товар:\n')[1]
-                add_data('sum', summ, call.message.chat.id)
-                update_balanse(call.message.chat.id, 'sum')
                 update_total_spent(call.message.chat.id, float(summ))
                 bot.send_message(call.message.chat.id, f'✅Готово\nВаша заявка №<code>{number}</code> уже в обработке!', reply_markup = start_markup(call.message.chat.id), parse_mode="HTML")
-                bot.send_message(adminGroup, f'Заявка №{number}\nПользователь: @{call.message.chat.username} \nid: {call.message.chat.id}\nУслуга: {usluga}\n🎩Ранг: {get_user_rank(call.message.chat.id)}\n💰 Баланс: {get_balans(call.message.chat.id)} ₽\nСумма: {summ}', reply_markup = admin_markup())
+                bot.send_message(adminGroup, f'Заявка №{number}\nПользователь: @{call.message.chat.username} \nid: {call.message.chat.id}\nУслуга: {usluga}\n🎩Ранг: {get_user_rank(call.message.chat.id)}\n💰 Баланс: {balance_before} → {balance_after} ₽\nСумма: {summ}', reply_markup = admin_markup())
                 bot.delete_message(chat_id=call.message.chat.id, message_id=call.message.message_id)
             else:
                 update_state(call.message, START)
@@ -6579,9 +6681,17 @@ id: {chat_id}
             bot.send_message(call.message.chat.id, '⚠️ Данные заявки устарели. Пожалуйста, оформите заявку заново.', reply_markup=start_markup(call.message.chat.id))
             update_state(call.message, START)
             return
-        update_balanse(call.message.chat.id, 'sum')
-        phone = USER_REQUEST_DATA[call.message.chat.id].get("phone", "Неизвестно")
         sum_rub = USER_REQUEST_DATA[call.message.chat.id].get("sum", "0")
+        balance_before = get_balans(call.message.chat.id)
+        # списываем именно замороженную сумму заявки (sum_rub), а не текущее значение
+        # ключа 'sum' в БД — его мог перезаписать другой флоу к этому моменту
+        add_data('sum', sum_rub, call.message.chat.id)
+        if not update_balanse(call.message.chat.id, 'sum'):
+            bot.send_message(call.message.chat.id, '⚠️ Недостаточно средств для завершения заявки.', reply_markup=start_markup(call.message.chat.id))
+            update_state(call.message, START)
+            return
+        balance_after = get_balans(call.message.chat.id)
+        phone = USER_REQUEST_DATA[call.message.chat.id].get("phone", "Неизвестно")
         sum_uah = USER_REQUEST_DATA[call.message.chat.id].get("original_sum", "0")
         service = USER_REQUEST_DATA[call.message.chat.id].get("service", "Неизвестно")
         usluga = f"{service}. {phone}"
@@ -6595,7 +6705,7 @@ id: {chat_id}
         except Exception:
             profit_line_v = ''
         bot.send_message(adminGroup,
-                         f'Заявка №{number}\nПользователь: @{call.message.chat.username} \nid: {call.message.chat.id}\nУслуга: {usluga}\nСумма в грн.: {sum_uah}\n🎩Ранг: {get_user_rank(call.message.chat.id)}\n💰 Баланс: {get_balans(call.message.chat.id)} ₽\nСумма: {sum_rub}{profit_line_v}',
+                         f'Заявка №{number}\nПользователь: @{call.message.chat.username} \nid: {call.message.chat.id}\nУслуга: {usluga}\nСумма в грн.: {sum_uah}\n🎩Ранг: {get_user_rank(call.message.chat.id)}\n💰 Баланс: {balance_before} → {balance_after} ₽\nСумма: {sum_rub}{profit_line_v}',
                          reply_markup=admin_markup())
         bot.send_message(call.message.chat.id, f'✅Готово\nВаша заявка №<code>{number}</code> уже в обработке!',
                          reply_markup=start_markup(call.message.chat.id), parse_mode="HTML")
@@ -6674,9 +6784,9 @@ id: {chat_id}
     elif text == 'ua_ok':
         message_text = call.message.text
         price = message_text.split()[-1][:-1]
-        if float(get_balans(call.message.chat.id))-(float(price))>=0:
-            update_balanse(call.message.chat.id, 'sum')
-            
+        balance_before = get_balans(call.message.chat.id)
+        if update_balanse(call.message.chat.id, 'sum'):
+            balance_after = get_balans(call.message.chat.id)
             update_total_spent(call.message.chat.id, float(price))
             con = 'Украина'
             usluga = f'Мобильный. {con}. {get_par("phone", call.message.chat.id)}'
@@ -6691,7 +6801,7 @@ id: {chat_id}
                 profit_line = f'\n💰Себестоимость: {cost}₽ (курс {cost_rate})\n📈Чистая прибыль: {profit}₽'
             except Exception:
                 profit_line = ''
-            admin_msg = bot.send_message(adminGroup, f'Заявка №{number}\nПользователь: @{call.message.chat.username} \nid: {call.message.chat.id}\nУслуга: {usluga}\n🎩Ранг: {get_user_rank(call.message.chat.id)}\n💰 Баланс: {get_balans(call.message.chat.id)} ₽\nСумма в грн.: {orig_suma}\nСумма: {suma}{profit_line}', reply_markup = admin_markup())
+            admin_msg = bot.send_message(adminGroup, f'Заявка №{number}\nПользователь: @{call.message.chat.username} \nid: {call.message.chat.id}\nУслуга: {usluga}\n🎩Ранг: {get_user_rank(call.message.chat.id)}\n💰 Баланс: {balance_before} → {balance_after} ₽\nСумма в грн.: {orig_suma}\nСумма: {suma}{profit_line}', reply_markup = admin_markup())
             register_request(number, admin_msg.message_id, adminGroup)
             bot.send_message(call.message.chat.id, f'✅Готово\nВаша заявка №<code>{number}</code> уже в обработке!', reply_markup = start_markup(call.message.chat.id), parse_mode="HTML")
             bot.delete_message(chat_id=call.message.chat.id, message_id=call.message.message_id)
@@ -6719,15 +6829,16 @@ id: {chat_id}
     elif text == 'ru_ok':
         message_text = call.message.text
         price = message_text.split()[-1][:-1]
-        if float(get_balans(call.message.chat.id))-(float(price))>=0:
-            update_balanse(call.message.chat.id, 'sum')
+        balance_before = get_balans(call.message.chat.id)
+        if update_balanse(call.message.chat.id, 'sum'):
+            balance_after = get_balans(call.message.chat.id)
             update_total_spent(call.message.chat.id, float(price))
             con = 'Россия'
             usluga = f'Мобильный. {con}. {get_par("phone", call.message.chat.id)}'
             suma = get_par("sum", call.message.chat.id)
             sum_bez_com = get_par("sum_bez_com", call.message.chat.id)
             number = to_arhiv(call.message.chat.id, usluga, suma)
-            bot.send_message(adminGroup, f'Заявка №{number}\nПользователь: @{call.message.chat.username} \nid: {call.message.chat.id}\nУслуга: {usluga}\n🎩Ранг: {get_user_rank(call.message.chat.id)}\n💰 Баланс: {get_balans(call.message.chat.id)} ₽\nСумма: {suma}\nСумма без комисии: {sum_bez_com}', reply_markup = admin_markup())
+            bot.send_message(adminGroup, f'Заявка №{number}\nПользователь: @{call.message.chat.username} \nid: {call.message.chat.id}\nУслуга: {usluga}\n🎩Ранг: {get_user_rank(call.message.chat.id)}\n💰 Баланс: {balance_before} → {balance_after} ₽\nСумма: {suma}\nСумма без комисии: {sum_bez_com}', reply_markup = admin_markup())
             bot.send_message(call.message.chat.id, f'✅Готово\nВаша заявка №<code>{number}</code> уже в обработке!', reply_markup = start_markup(call.message.chat.id), parse_mode="HTML")
             bot.delete_message(chat_id=call.message.chat.id, message_id=call.message.message_id)
         else:
@@ -6754,8 +6865,9 @@ id: {chat_id}
     elif text == "es_ok":
         message_text = call.message.text
         price = message_text.split()[-1][:-1]
-        if float(get_balans(call.message.chat.id))-(float(price))>=0:
-            update_balanse(call.message.chat.id, 'sum')
+        balance_before = get_balans(call.message.chat.id)
+        if update_balanse(call.message.chat.id, 'sum'):
+            balance_after = get_balans(call.message.chat.id)
             update_total_spent(call.message.chat.id, float(price))
             con = 'Испания'
             usluga = f'Мобильный. {con}. {get_par("phone", call.message.chat.id)}'
@@ -6763,7 +6875,7 @@ id: {chat_id}
             orig_suma = get_par("original_sum", call.message.chat.id)
             number = to_arhiv(call.message.chat.id, usluga, suma)
             # round(float(suma)/get_kurs("eur"),2)
-            bot.send_message(adminGroup, f'Заявка №{number}\nПользователь: @{call.message.chat.username} \nid: {call.message.chat.id}\nУслуга: {usluga}\n🎩Ранг: {get_user_rank(call.message.chat.id)}\n💰 Баланс: {get_balans(call.message.chat.id)} ₽\nСумма в евро: {orig_suma}\nСумма: {suma}', reply_markup = admin_markup())
+            bot.send_message(adminGroup, f'Заявка №{number}\nПользователь: @{call.message.chat.username} \nid: {call.message.chat.id}\nУслуга: {usluga}\n🎩Ранг: {get_user_rank(call.message.chat.id)}\n💰 Баланс: {balance_before} → {balance_after} ₽\nСумма в евро: {orig_suma}\nСумма: {suma}', reply_markup = admin_markup())
             bot.send_message(call.message.chat.id, f'✅Готово\nВаша заявка №<code>{number}</code> уже в обработке!', reply_markup = start_markup(call.message.chat.id), parse_mode="HTML")
             bot.delete_message(chat_id=call.message.chat.id, message_id=call.message.message_id)
         else:
@@ -6906,15 +7018,16 @@ id: {chat_id}
     elif text == "invoice_buy":
         message_text = call.message.text
         summ = message_text.split()[-1][:-1]
-        if float(get_balans(call.message.chat.id))-float(summ)>=0:
+        add_data('sum', summ, call.message.chat.id)
+        balance_before = get_balans(call.message.chat.id)
+        if update_balanse(call.message.chat.id, 'sum'):
+            balance_after = get_balans(call.message.chat.id)
             # number = int(call.message.text.split('Заявка №')[1].split('\n')[0])
             number = to_arhiv(call.message.chat.id, "Покупка аккаунта или донат", summ)
             usluga = message_text.split("Название товара : ")[1].split("\n")[0]
-            add_data('sum', summ, call.message.chat.id)
-            update_balanse(call.message.chat.id, 'sum')
             update_total_spent(call.message.chat.id, float(summ))
             bot.send_message(call.message.chat.id, f'✅Готово', reply_markup = start_markup(call.message.chat.id), parse_mode="HTML")
-            send_to_archives(bot.send_message, f"Номер заявки: {number}\nId пользователя: {call.message.chat.id}\nПользователь: @{call.message.chat.username}\nСумма: {summ}\n🎩Ранг: {get_user_rank(call.message.chat.id)}\n💰 Баланс: {get_balans(call.message.chat.id)} ₽\nТовар: {usluga}")
+            send_to_archives(bot.send_message, f"Номер заявки: {number}\nId пользователя: {call.message.chat.id}\nПользователь: @{call.message.chat.username}\nСумма: {summ}\n🎩Ранг: {get_user_rank(call.message.chat.id)}\n💰 Баланс: {balance_before} → {balance_after} ₽\nТовар: {usluga}")
             # bot.send_message(adminGroup, f'Заявка №{number}\nПользователь: @{call.message.chat.username} \nid: {call.message.chat.id}\nУслуга: {usluga}\nСумма: {summ}', reply_markup = admin_markup())
             bot.delete_message(chat_id=call.message.chat.id, message_id=call.message.message_id)
         else:
@@ -7050,9 +7163,10 @@ def admin_num(message, user_chat_id, summ):
     message_text = message.text
     user = bot.get_chat(user_chat_id)
     price = summ * get_kurs("uah")
-    if float(get_balans(user_chat_id)) - (float(price)) >= 0:
-        add_data('sum', price, user_chat_id)
-        update_balanse(user_chat_id, 'sum')
+    add_data('sum', price, user_chat_id)
+    balance_before = get_balans(user_chat_id)
+    if update_balanse(user_chat_id, 'sum'):
+        balance_after = get_balans(user_chat_id)
         update_total_spent(user_chat_id, float(price))
         con = 'Украина'
         usluga = f'Мобильный. {con}. {create_req_num}'
@@ -7068,7 +7182,7 @@ def admin_num(message, user_chat_id, summ):
         except Exception:
             profit_line_m = ''
         bot.send_message(adminGroup,
-                         f'Заявка №{number}\nПользователь: @{user.username} \nid: {user_chat_id}\nУслуга: {usluga}\n🎩Ранг: {get_user_rank(user_chat_id)}\nСумма в грн.: {orig_suma}\nСумма: {suma}{profit_line_m}',
+                         f'Заявка №{number}\nПользователь: @{user.username} \nid: {user_chat_id}\nУслуга: {usluga}\n🎩Ранг: {get_user_rank(user_chat_id)}\n💰 Баланс: {balance_before} → {balance_after} ₽\nСумма в грн.: {orig_suma}\nСумма: {suma}{profit_line_m}',
                          reply_markup=admin_markup())
         bot.send_message(message.chat.id, f'✅Готово\nВаша заявка №<code>{number}</code> уже в обработке!',
                          reply_markup=start_markup(message.chat.id), parse_mode="HTML")
@@ -7536,8 +7650,9 @@ def get_text_messages(message):
         bot.send_message(message.chat.id, 'Введите промокод', reply_markup = start_markup(message.chat.id, text='🚫 Отмена'))
         update_state(message, PROMOCODE)
     elif message.text == "🖌Изменить баланс пользователя":
-        bot.send_message(message.chat.id, 'Введите ID пользователя:', reply_markup = start_markup(message.chat.id, text='🚫 Отмена'))
-        update_state(message, SET_ID_BALANS)
+        if message.chat.id in admins:
+            bot.send_message(message.chat.id, 'Введите ID пользователя:', reply_markup = start_markup(message.chat.id, text='🚫 Отмена'))
+            update_state(message, SET_ID_BALANS)
     elif message.text == "TEST_CREATE_REQUEST♦":
         bot.send_message(message.chat.id, 'Введите ID пользователя:', reply_markup = start_markup(message.chat.id, text='🚫 Отмена'))
         update_state(message, CREATE_NUM_REQUEST)
