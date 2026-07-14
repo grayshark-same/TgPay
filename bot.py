@@ -303,6 +303,95 @@ threading.Thread(target=_update_uah_rate_cache, daemon=True).start()
 import esim_sub as _esim_sub
 _esim_sub.init_db()
 import esim_pdf as _esim_pdf
+import fragment
+
+def _sp_config():
+    with open('stars_premium.json', encoding='utf-8') as f:
+        return json.load(f)
+
+SP_PENDING_FILE = 'stars_premium_pending.json'
+
+def _sp_pending_add(number, user_id, username, kind, qty_or_months, recipient, price, provider_order_id=None):
+    try:
+        with open(SP_PENDING_FILE, encoding='utf-8') as f:
+            data = json.load(f)
+    except Exception:
+        data = {}
+    data[str(number)] = {
+        'user_id': user_id, 'username': username, 'kind': kind,
+        'qty_or_months': qty_or_months, 'recipient': recipient, 'price': price,
+        'provider_order_id': provider_order_id,
+    }
+    with open(SP_PENDING_FILE, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=4)
+
+def _sp_pending_pop(number):
+    try:
+        with open(SP_PENDING_FILE, encoding='utf-8') as f:
+            data = json.load(f)
+    except Exception:
+        return None
+    entry = data.pop(str(number), None)
+    if entry is not None:
+        with open(SP_PENDING_FILE, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=4)
+    return entry
+
+def _sp_notify_admin_pending(number):
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    markup.add(types.InlineKeyboardButton("✅ Выдано вручную", callback_data=f"sp_manual_accept:{number}"))
+    markup.add(types.InlineKeyboardButton("❌ Отклонить (вернуть деньги)", callback_data=f"sp_manual_reject:{number}"))
+    bot.send_message(adminGroup, f"⏳ Заявка №{number} на ручную выдачу Звёзд/Premium (провайдер не настроен или ошибка)", reply_markup=markup)
+
+def _sp_service_label(entry):
+    if entry['kind'] == 'stars':
+        return f"⭐ Звёзды x{entry['qty_or_months']} для @{entry['recipient']}"
+    return f"💎 Premium {entry['qty_or_months']} мес. для @{entry['recipient']}"
+
+def _sp_poll_loop():
+    """Опрашивает статус заказов Wizard API для заявок в очереди — раз в 30 сек.
+    Заявки без provider_order_id (создание заказа у провайдера не удалось) сюда
+    не попадают — они ждут ручной обработки админом через _sp_notify_admin_pending."""
+    import time as _time
+    while True:
+        _time.sleep(30)
+        try:
+            with open(SP_PENDING_FILE, encoding='utf-8') as f:
+                snapshot = json.load(f)
+        except Exception:
+            continue
+        for number, entry in list(snapshot.items()):
+            provider_order_id = entry.get('provider_order_id')
+            if not provider_order_id:
+                continue
+            info = fragment.get_order(provider_order_id)
+            if not info or info.get('status') not in ('success', 'failed'):
+                continue
+            entry = _sp_pending_pop(number)
+            if not entry:
+                continue
+            user_id = entry['user_id']
+            price = entry['price']
+            label = _sp_service_label(entry)
+            if info['status'] == 'success':
+                try:
+                    bot.send_message(user_id, f"✅ Ваша заявка №{number} выполнена!")
+                except Exception:
+                    pass
+                send_to_archives(bot.send_message,
+                    f'Заявка №{number}\nid: {user_id}\nУслуга: {label}\nСумма: {price}₽\n'
+                    f'Статус: ✅Одобрено (order {provider_order_id})')
+            else:
+                add_deposit(user_id, price, description=f'Возврат — заявка №{number} (provider order failed)')
+                try:
+                    bot.send_message(user_id, f"❌ Заявка №{number} не выполнена, деньги возвращены на баланс.")
+                except Exception:
+                    pass
+                send_to_archives(bot.send_message,
+                    f'Заявка №{number}\nid: {user_id}\nУслуга: {label}\nСумма: {price}₽\n'
+                    f'💰 Баланс после возврата: {get_balans(user_id)}₽\n'
+                    f'Статус: ❌Отклонено (order {provider_order_id} failed)')
+threading.Thread(target=_sp_poll_loop, daemon=True).start()
 
 def _esim_sub_loop():
     import time as _time
@@ -473,13 +562,21 @@ SEND_BUTTON, SEND_URL, CALC, CARD, SEND_IMAGE, SEND_RECEIPT, PAYOK_BUY, MERCHANT
 INVOICE_USER, INVOICE_PRICE, INVOICE_TOTAL, PROMOCODE, PROMOCODE_PRICE, PROMOCODE_USER, YOOMANY, NICEPAY, YOOMANY_REQUISITES,\
 YOOMANY_REQUISITES_LINK, YOOMANY_REQUISITES_EMAIL, YOOMANY_REQUISITES_PASSWORD, REF_PROCENT_CHANGE, REF_HRYVNIA_CHANGE, MESSAGE_TO_USER,\
 SEND_MESSAGE_TO_USER, ADMIN_DIALOG, TRANSITIONAL_LINK, SBP,CHOOSE_PLAN, CHOOSE_PERIOD, SBP_NUMBER, SBP_AMOUNT, CARD_NUMBER, CARD_AMOUNT, ACCEPTED_KEY, SEND_TARGET_ID,\
-SEND_TARGET_LIST, CRYPT_SUMM, CRYPT_TXID, RESET_REF_BALANCE, ESIM_MANUAL_SEND, SET_MODERATOR_ID_BALANS, GET_MODERATOR_ID_SUMM, SET_VALUE, PENALTY_AMOUNT_LEAVE, SEND_CONFIRM, WAIT_SVC_CONTACT, ESIM_QTY, SVC_GB_PHONE, PENALTY_ADD_COUNT, CASH_AMOUNT, CASH_COMMENT, DONATION_AMOUNT, DONATION_PHOTO = range(80)
+SEND_TARGET_LIST, CRYPT_SUMM, CRYPT_TXID, RESET_REF_BALANCE, ESIM_MANUAL_SEND, SET_MODERATOR_ID_BALANS, GET_MODERATOR_ID_SUMM, SET_VALUE, PENALTY_AMOUNT_LEAVE, SEND_CONFIRM, WAIT_SVC_CONTACT, ESIM_QTY, SVC_GB_PHONE, PENALTY_ADD_COUNT, CASH_AMOUNT, CASH_COMMENT, DONATION_AMOUNT, DONATION_PHOTO, STARS_QTY, STARS_USERNAME, PREMIUM_USERNAME, SP_PRICE_EDIT = range(84)
 USER_STATE=defaultdict(lambda:START)
 USER_REQUEST_DATA = defaultdict(dict)
 
 USER_WAIT_FOR_CONTINUE = defaultdict(lambda: False)
 admin_waiting_key = {}
 ########
+def safe_delete_message(*args, **kwargs):
+    """bot.delete_message, который не роняет обработчик, если сообщение старше 48ч
+    (Telegram Bot API запрещает удалять такие сообщения) или уже удалено."""
+    try:
+        bot.delete_message(*args, **kwargs)
+    except Exception as e:
+        print(f'[safe_delete_message] {e}')
+
 def send_to_archives(method, *args, **kwargs):
     for group_id in arhiveGroups:
         try:
@@ -751,9 +848,9 @@ def start_markup(chat_id, text = ""):
     else:
         item1 = types.KeyboardButton("📲Мобильный")
         item2 = types.KeyboardButton("🎮Игры")
-        item3 = types.KeyboardButton('🆔Аккаунты')
+        # item3 = types.KeyboardButton('🆔Аккаунты')
         item4 = types.KeyboardButton('🌐eSIM сим-карты')
-        item5 = types.KeyboardButton('🛜Интернет')
+        # item5 = types.KeyboardButton('🛜Интернет')
         item6 = types.KeyboardButton('❇️Профиль')
         item7 = types.KeyboardButton('⭐️Отзывы')
         item8 = types.KeyboardButton('👨‍💻Администратор')
@@ -761,9 +858,10 @@ def start_markup(chat_id, text = ""):
         item10 = types.KeyboardButton('📋Правила')
         item11 = types.KeyboardButton('📲Подключение связи+')
         item12 = types.KeyboardButton('⚡️VPN⚡️')
+        item13 = types.KeyboardButton('⭐️Звёзды и Premium')
         markup.add(types.KeyboardButton('🌟 Получить награду 🌟'))
         markup.add(item1, item12, item2)
-        markup.add(item6, item4, item5)
+        markup.add(item6, item4, item13)
         markup.add(item11)
         markup.add(item8, item9, item10)
         markup.add(item7)
@@ -778,6 +876,7 @@ def start_markup(chat_id, text = ""):
             markup.add(types.KeyboardButton('🪪Упраление картами'),
                     types.KeyboardButton('🔷Настройка eSIM'),
                     types.KeyboardButton('👀Выставить счет'))
+            markup.add(types.KeyboardButton('💫Цены Звёзд/Premium'))
             markup.add(types.KeyboardButton('📝Добавить промокод'),
                     types.KeyboardButton('📈Посмотреть аналитику данных'),
                     types.KeyboardButton('🟣Юмани реквизиты'))
@@ -2024,7 +2123,7 @@ def accepted_key(call):
     group_id = call.message.chat.id
 
     # удаляем сообщение с кнопкой
-    bot.delete_message(group_id, call.message.message_id)
+    safe_delete_message(group_id, call.message.message_id)
 
     # сообщение "введите ключ"
     ask_msg = bot.send_message(group_id, "🔑 Введите ключ:")
@@ -2050,8 +2149,8 @@ def get_vpn_key_from_admin(message):
     markup.add(types.InlineKeyboardButton("Windows", callback_data="i_windows"))
     markup.add(types.InlineKeyboardButton("MacOS", callback_data="i_macos"))
     markup.add(types.InlineKeyboardButton("Smart TV", callback_data="i_smarttv"))
-    bot.delete_message(group_id, message.message_id)
-    bot.delete_message(group_id, data["ask_msg_id"])
+    safe_delete_message(group_id, message.message_id)
+    safe_delete_message(group_id, data["ask_msg_id"])
     bot.send_message(
         data["client_id"],
         f"🗝Ваш ключ активации: {key}\n\nИнструкции по подключению:",
@@ -2060,7 +2159,7 @@ def get_vpn_key_from_admin(message):
 
     try:
         ok = bot.send_message(group_id, "✅ Отправлено")
-        bot.delete_message(group_id, ok.message_id)
+        safe_delete_message(group_id, ok.message_id)
     except:
         pass
 
@@ -2385,7 +2484,7 @@ def get_balanse(message):
         if message.text.replace('-', '').isdigit():
             markup = start_markup(message.chat.id)
             id = get_par('id_admin', message.chat.id)
-            suuu = add_deposit(int(id), message.text, description='Изменение баланса администратором')
+            suuu = change_deposit(int(id), message.text)
             bot.send_message(message.chat.id, f'Баланс изменён', reply_markup = markup)
             usluga = f'Пополнение баланса вручную.\n'
             date = datetime.now().date().strftime('%d.%m.%Y')
@@ -2419,7 +2518,7 @@ def get_balanse(message):
                         parse_mode="HTML"
                     )
             bot.send_message(id, f'✅Ваш баланс пополнен на сумму {suuu} р.')
-            send_to_archives(bot.send_message, f'Дата: {date}\nid: {id}\nУслуга: {usluga}\nСумма: {suuu} р.\n🎩Ранг: {get_user_rank(message.chat.id)}\n💰 Баланс: {get_balans(message.chat.id)} ₽\nСтатус: ✅Одобрено')
+            send_to_archives(bot.send_message, f'Дата: {date}\nid: {id}\nУслуга: {usluga}\nСумма: {suuu} р.\n🎩Ранг: {get_user_rank(message.chat.id)}\n💰 Баланс: {get_balans(message.chat.id) if usluga != f'Пополнение баланса вручную.\n' else suuu} ₽\nСтатус: ✅Одобрено')
             update_state(message, START)
         else:
             bot.send_message(message.chat.id, 'Неверно!')
@@ -2659,6 +2758,13 @@ def esim_edit(message):
         with open("esim.json", "w", encoding="utf-8") as file:
             json.dump(data, file, ensure_ascii=False, indent=4)
         bot.send_message(message.chat.id, f"Себестоимость изменена: {cost_val} ₴", reply_markup=markup)
+    if esim_method == "caption_tariff":
+        with open("esim.json", encoding="utf-8") as file:
+            data = json.load(file)
+        data[tariff_name]["delivery_caption"] = message.text or "Ваш eSIM"
+        with open("esim.json", "w", encoding="utf-8") as file:
+            json.dump(data, file, ensure_ascii=False, indent=4)
+        bot.send_message(message.chat.id, "Текст выдачи изменён", reply_markup=markup)
     update_state(message, START)
 
 def _get_esim_caption_entities(tariff_data):
@@ -3089,6 +3195,96 @@ def esim_qty_input(message):
     _show_esim_confirm(message, qty)
 
 
+@bot.message_handler(func=lambda message: get_state(message) == STARS_QTY)
+def sp_stars_qty_input(message):
+    if message.text and message.text.strip() == '🚫 Отмена':
+        update_state(message, START)
+        bot.send_message(message.chat.id, 'Отменено.', reply_markup=start_markup(message.chat.id))
+        return
+    cfg = _sp_config()
+    try:
+        qty = int(message.text.strip())
+        if not (cfg['stars_min'] <= qty <= cfg['stars_max']):
+            raise ValueError
+    except (ValueError, AttributeError):
+        bot.send_message(message.chat.id, f"Введите целое число от {cfg['stars_min']} до {cfg['stars_max']}:")
+        return
+    add_data('sp_stars_qty', qty, message.chat.id)
+    bot.send_message(message.chat.id, "Введите @username получателя (или username без @):",
+                     reply_markup=start_markup(message.chat.id, text='🚫 Отмена'))
+    update_state(message, STARS_USERNAME)
+
+
+@bot.message_handler(func=lambda message: get_state(message) == STARS_USERNAME)
+def sp_stars_username_input(message):
+    if message.text and message.text.strip() == '🚫 Отмена':
+        update_state(message, START)
+        bot.send_message(message.chat.id, 'Отменено.', reply_markup=start_markup(message.chat.id))
+        return
+    username = message.text.strip().lstrip('@')
+    if not re.match(r'^[A-Za-z0-9_]{5,32}$', username):
+        bot.send_message(message.chat.id, 'Некорректный username. Введите ещё раз:')
+        return
+    add_data('sp_username', username, message.chat.id)
+    qty = int(get_par('sp_stars_qty', message.chat.id))
+    cfg = _sp_config()
+    price = round(qty * cfg['star_price'], 2)
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    markup.add(types.InlineKeyboardButton("✅ Оплатить", callback_data="sp_confirm_stars"))
+    markup.add(types.InlineKeyboardButton("❌ Отмена", callback_data="sp_cancel"))
+    bot.send_message(message.chat.id,
+        f"⭐ Звёзды x{qty} для @{username}\n💰 Стоимость: {price}₽\n💵 Ваш баланс: {get_balans(message.chat.id)}₽",
+        reply_markup=markup)
+    update_state(message, START)
+
+
+@bot.message_handler(func=lambda message: get_state(message) == PREMIUM_USERNAME)
+def sp_premium_username_input(message):
+    if message.text and message.text.strip() == '🚫 Отмена':
+        update_state(message, START)
+        bot.send_message(message.chat.id, 'Отменено.', reply_markup=start_markup(message.chat.id))
+        return
+    username = message.text.strip().lstrip('@')
+    if not re.match(r'^[A-Za-z0-9_]{5,32}$', username):
+        bot.send_message(message.chat.id, 'Некорректный username. Введите ещё раз:')
+        return
+    add_data('sp_username', username, message.chat.id)
+    months = int(get_par('sp_months', message.chat.id))
+    cfg = _sp_config()
+    price = cfg['premium_prices'][str(months)]
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    markup.add(types.InlineKeyboardButton("✅ Оплатить", callback_data="sp_confirm_premium"))
+    markup.add(types.InlineKeyboardButton("❌ Отмена", callback_data="sp_cancel"))
+    bot.send_message(message.chat.id,
+        f"💎 Premium {months} мес. для @{username}\n💰 Стоимость: {price}₽\n💵 Ваш баланс: {get_balans(message.chat.id)}₽",
+        reply_markup=markup)
+    update_state(message, START)
+
+
+@bot.message_handler(func=lambda message: get_state(message) == SP_PRICE_EDIT)
+def sp_price_edit_input(message):
+    if message.chat.id not in admins:
+        update_state(message, START)
+        return
+    if message.text and message.text.strip() == '🚫 Отмена':
+        update_state(message, START)
+        bot.send_message(message.chat.id, 'Отменено.', reply_markup=start_markup(message.chat.id))
+        return
+    parts = (message.text or '').split()
+    try:
+        star_price, p3, p6, p12 = float(parts[0]), float(parts[1]), float(parts[2]), float(parts[3])
+    except (ValueError, IndexError):
+        bot.send_message(message.chat.id, 'Неверный формат. Пример: 1.6 1200 2100 3800')
+        return
+    cfg = _sp_config()
+    cfg['star_price'] = star_price
+    cfg['premium_prices'] = {'3': p3, '6': p6, '12': p12}
+    with open('stars_premium.json', 'w', encoding='utf-8') as f:
+        json.dump(cfg, f, ensure_ascii=False, indent=4)
+    bot.send_message(message.chat.id, '✅ Цены обновлены.', reply_markup=start_markup(message.chat.id))
+    update_state(message, START)
+
+
 #ESIM_IMAGE_EDIT
 @bot.message_handler(func=lambda message: get_state(message) == ESIM_IMAGE_EDIT, content_types=['photo', 'document', 'text'])
 def esim_image_edit(message):
@@ -3262,8 +3458,13 @@ def esim_image_edit(message):
                     esim_data[tariff_name] = {}
                 existing_keys = [int(k) for k in esim_data[tariff_name].keys()] if esim_data[tariff_name] else []
                 esim_count = max(existing_keys) + 1 if existing_keys else 1
+                try:
+                    with open("esim.json", encoding="utf-8") as ef:
+                        default_caption = json.load(ef).get(tariff_name, {}).get("delivery_caption", "Ваш eSIM")
+                except Exception:
+                    default_caption = "Ваш eSIM"
                 esim_data[tariff_name][esim_count] = {
-                    "message_answer": message.caption or "Ваш eSIM",
+                    "message_answer": default_caption,
                     "file_id": file_id
                 }
                 with open("eSIM/esim_answer.json", "w", encoding="utf-8") as file:
@@ -3754,7 +3955,7 @@ def poll_lava_payment(chat_id, order_id, message_id):
         print(f"[LAVA POLL] order={order_id}, status={status}, amount={amount}, user={chat_id}")
         if status == "success":
             try:
-                bot.delete_message(chat_id=chat_id, message_id=message_id)
+                safe_delete_message(chat_id=chat_id, message_id=message_id)
             except Exception:
                 pass
             bot.send_message(chat_id, f"✅ Оплата подтверждена! На ваш баланс начислено {amount}р.", reply_markup=start_markup(chat_id))
@@ -3766,14 +3967,14 @@ def poll_lava_payment(chat_id, order_id, message_id):
             return
         elif status in ("expired", "cancel"):
             try:
-                bot.delete_message(chat_id=chat_id, message_id=message_id)
+                safe_delete_message(chat_id=chat_id, message_id=message_id)
             except Exception:
                 pass
             bot.send_message(chat_id, "⌛ Срок действия ссылки Lava Pay истёк. Попробуйте снова.")
             user_order_ids[chat_id] = ""
             return
     try:
-        bot.delete_message(chat_id=chat_id, message_id=message_id)
+        safe_delete_message(chat_id=chat_id, message_id=message_id)
     except Exception:
         pass
     user_order_ids[chat_id] = ""
@@ -4527,7 +4728,7 @@ def handle_callback_query(call):
     elif text.startswith("svc_gb_accept:"):
         _, number_c, user_id_c, summa_c = text.split(":")
         user_id_c = int(user_id_c)
-        bot.delete_message(chat_id=call.message.chat.id, message_id=call.message.message_id)
+        safe_delete_message(chat_id=call.message.chat.id, message_id=call.message.message_id)
         bot.send_message(user_id_c,
             f"✅ Ваша заявка №<code>{number_c}</code> выполнена!\nСпасибо за покупку 🎉",
             parse_mode="HTML", reply_markup=start_markup(user_id_c))
@@ -4557,7 +4758,7 @@ def handle_callback_query(call):
         _, number_c, user_id_c, summa_c = text.split(":")
         user_id_c = int(user_id_c)
         add_deposit(user_id_c, int(summa_c), description='Возврат средств')
-        bot.delete_message(chat_id=call.message.chat.id, message_id=call.message.message_id)
+        safe_delete_message(chat_id=call.message.chat.id, message_id=call.message.message_id)
         bot.send_message(user_id_c,
             f"❌ Заявка №<code>{number_c}</code> отклонена.\n💰 Вам возвращено {summa_c} ₽ на баланс.",
             parse_mode="HTML", reply_markup=start_markup(user_id_c))
@@ -5018,10 +5219,11 @@ def handle_callback_query(call):
         inline_markup.add(types.InlineKeyboardButton("Изменить изображение тарифа", callback_data="image_tariff"))
         inline_markup.add(types.InlineKeyboardButton("Изменить цену тарифа", callback_data="price_tariff"))
         inline_markup.add(types.InlineKeyboardButton("Изменить себестоимость (₴)", callback_data="cost_tariff"))
+        inline_markup.add(types.InlineKeyboardButton("Изменить текст выдачи eSIM", callback_data="caption_tariff"))
         inline_markup.add(types.InlineKeyboardButton("Пополнить кол-во eSIM", callback_data="auto_tariff"))
         bot.send_message(call.message.chat.id, f"Выберите что хотите изменить в тарифе {text.split('_')[1]}", reply_markup=inline_markup)
 
-    elif text in ["name_tariff", "about_tariff", "price_tariff", "cost_tariff"]:
+    elif text in ["name_tariff", "about_tariff", "price_tariff", "cost_tariff", "caption_tariff"]:
         eSIM_name = call.message.text.split()[-1]
         if text == "name_tariff":
             bot.send_message(call.message.chat.id, f"Введите название тарифа", reply_markup=start_markup(chat_id, text='🚫 Отмена'))
@@ -5031,6 +5233,8 @@ def handle_callback_query(call):
             bot.send_message(call.message.chat.id, f"Введите цену для тарифа", reply_markup=start_markup(chat_id, text='🚫 Отмена'))
         if text == "cost_tariff":
             bot.send_message(call.message.chat.id, f"Введите себестоимость в гривнах (₴) для тарифа", reply_markup=start_markup(chat_id, text='🚫 Отмена'))
+        if text == "caption_tariff":
+            bot.send_message(call.message.chat.id, f"Введите текст, который будет автоматически отправляться вместе с фото eSIM при выдаче", reply_markup=start_markup(chat_id, text='🚫 Отмена'))
         add_data("esim_edit_method", text, call.message.chat.id)
         add_data("tariff_name", eSIM_name, call.message.chat.id)
         update_state(call.message, ESIM_EDIT)
@@ -5234,7 +5438,7 @@ def handle_callback_query(call):
         plan = get_user_data(chat_id, "plan")
         months = get_user_data(chat_id, "months")
         price = get_user_data(chat_id, "price")
-        bot.delete_message(chat_id, message_id)
+        safe_delete_message(chat_id, message_id)
         add_data('sum', str(price), chat_id)
         balance_before = get_balans(chat_id)
         if update_balanse(chat_id, 'sum'):
@@ -5316,7 +5520,7 @@ id: {chat_id}
 
     elif text == "cancel_vpn":
         message_id = call.message.message_id
-        bot.delete_message(call.message.chat.id, message_id)
+        safe_delete_message(call.message.chat.id, message_id)
         bot.send_message(chat_id,
                          "Без VPN ваш интернет скучает 😎\nВаш ключ уже готов — подключитесь и летайте по сети 🌪",
                          reply_markup=start_markup(chat_id))
@@ -5372,9 +5576,16 @@ id: {chat_id}
         if not ok:
             bot.answer_callback_query(call.id, "Ошибка при активации. Обратитесь в поддержку.", show_alert=True)
             return
+        balance_before = get_balans(chat_id)
         add_deposit(chat_id, -price, description=f"VPN {VPN_PLAN_NAMES[months]}")
         update_total_spent(chat_id, float(price))
-        to_arhiv(chat_id, f"⚡️ VPN {VPN_PLAN_NAMES[months]}", price)
+        number = to_arhiv(chat_id, f"⚡️ VPN {VPN_PLAN_NAMES[months]}", price)
+        balance_after = get_balans(chat_id)
+        send_to_archives(bot.send_message,
+            f'Заявка №{number}\nПользователь: @{username}\nid: {chat_id}\n'
+            f'Услуга: ⚡️ VPN {VPN_PLAN_NAMES[months]}\nСумма: {price}₽\n'
+            f'🎩Ранг: {get_user_rank(chat_id)}\n💰 Баланс: {balance_before} → {balance_after} ₽\n'
+            f'📅 Действует до: {end_date.strftime("%d.%m.%Y")}\nСтатус: ✅Одобрено')
         bot.edit_message_reply_markup(chat_id, call.message.message_id, reply_markup=None)
         bot.send_message(
             chat_id,
@@ -5389,6 +5600,109 @@ id: {chat_id}
     elif text == "vpn_cancel_buy":
         bot.edit_message_reply_markup(chat_id, call.message.message_id, reply_markup=None)
         bot.send_message(chat_id, "Отменено.", reply_markup=start_markup(chat_id))
+
+    elif text == "sp_buy_stars":
+        bot.send_message(chat_id, "Введите количество звёзд (от 50 до 10 000 000):",
+                         reply_markup=start_markup(chat_id, text='🚫 Отмена'))
+        update_state(call.message, STARS_QTY)
+
+    elif text == "sp_buy_premium":
+        cfg = _sp_config()
+        markup = types.InlineKeyboardMarkup(row_width=1)
+        for months in (3, 6, 12):
+            price = cfg['premium_prices'][str(months)]
+            markup.add(types.InlineKeyboardButton(f"{months} мес — {price}₽", callback_data=f"sp_premium_{months}"))
+        markup.add(types.InlineKeyboardButton("❌ Отмена", callback_data="sp_cancel"))
+        bot.send_message(chat_id, "💎 Выберите срок Premium-подписки:", reply_markup=markup)
+
+    elif text.startswith("sp_premium_"):
+        months = int(text.split("_")[-1])
+        add_data('sp_months', months, chat_id)
+        bot.send_message(chat_id, "Введите @username получателя (или username без @):",
+                         reply_markup=start_markup(chat_id, text='🚫 Отмена'))
+        update_state(call.message, PREMIUM_USERNAME)
+
+    elif text == "sp_cancel":
+        bot.edit_message_reply_markup(chat_id, call.message.message_id, reply_markup=None)
+        bot.send_message(chat_id, "Отменено.", reply_markup=start_markup(chat_id))
+
+    elif text == "sp_confirm_stars":
+        qty = int(get_par('sp_stars_qty', chat_id))
+        username = get_par('sp_username', chat_id)
+        cfg = _sp_config()
+        price = round(qty * cfg['star_price'], 2)
+        add_data('sum', str(price), chat_id)
+        balance_before = get_balans(chat_id)
+        if not update_balanse(chat_id, 'sum'):
+            bot.answer_callback_query(call.id, "Недостаточно средств", show_alert=True)
+            return
+        balance_after = get_balans(chat_id)
+        update_total_spent(chat_id, price)
+        number = to_arhiv(chat_id, f'⭐ Звёзды x{qty} для @{username}', price)
+        bot.edit_message_reply_markup(chat_id, call.message.message_id, reply_markup=None)
+        ok, result = fragment.create_order('stars', username, qty)
+        provider_order_id = result if ok else None
+        _sp_pending_add(number, chat_id, call.message.chat.username, 'stars', qty, username, price, provider_order_id)
+        if ok:
+            bot.send_message(chat_id, f"⏳ Заявка №{number} принята в обработку, {qty}⭐ будут отправлены на @{username} в ближайшее время.", reply_markup=start_markup(chat_id))
+            status_line = f'Статус: ⏳В обработке (order {provider_order_id})'
+        else:
+            bot.send_message(chat_id, f"⏳ Заявка №{number} принята, звёзды будут отправлены в ближайшее время.", reply_markup=start_markup(chat_id))
+            status_line = f'Статус: ⏳Ожидает ручной выдачи ({result})'
+            _sp_notify_admin_pending(number)
+        send_to_archives(bot.send_message,
+            f'Заявка №{number}\nПользователь: @{call.message.chat.username}\nid: {chat_id}\n'
+            f'Услуга: ⭐ Звёзды x{qty} для @{username}\nСумма: {price}₽\n'
+            f'🎩Ранг: {get_user_rank(chat_id)}\n💰 Баланс: {balance_before} → {balance_after} ₽\n{status_line}')
+        update_state(call.message, START)
+
+    elif text == "sp_confirm_premium":
+        months = int(get_par('sp_months', chat_id))
+        username = get_par('sp_username', chat_id)
+        cfg = _sp_config()
+        price = cfg['premium_prices'][str(months)]
+        add_data('sum', str(price), chat_id)
+        balance_before = get_balans(chat_id)
+        if not update_balanse(chat_id, 'sum'):
+            bot.answer_callback_query(call.id, "Недостаточно средств", show_alert=True)
+            return
+        balance_after = get_balans(chat_id)
+        update_total_spent(chat_id, float(price))
+        number = to_arhiv(chat_id, f'💎 Premium {months} мес. для @{username}', price)
+        bot.edit_message_reply_markup(chat_id, call.message.message_id, reply_markup=None)
+        ok, result = fragment.create_order('premium', username, months)
+        provider_order_id = result if ok else None
+        _sp_pending_add(number, chat_id, call.message.chat.username, 'premium', months, username, price, provider_order_id)
+        if ok:
+            bot.send_message(chat_id, f"⏳ Заявка №{number} принята в обработку, Premium на {months} мес. будет отправлен на @{username} в ближайшее время.", reply_markup=start_markup(chat_id))
+            status_line = f'Статус: ⏳В обработке (order {provider_order_id})'
+        else:
+            bot.send_message(chat_id, f"⏳ Заявка №{number} принята, Premium будет выдан в ближайшее время.", reply_markup=start_markup(chat_id))
+            status_line = f'Статус: ⏳Ожидает ручной выдачи ({result})'
+            _sp_notify_admin_pending(number)
+        send_to_archives(bot.send_message,
+            f'Заявка №{number}\nПользователь: @{call.message.chat.username}\nid: {chat_id}\n'
+            f'Услуга: 💎 Premium {months} мес. для @{username}\nСумма: {price}₽\n'
+            f'🎩Ранг: {get_user_rank(chat_id)}\n💰 Баланс: {balance_before} → {balance_after} ₽\n{status_line}')
+        update_state(call.message, START)
+
+    elif text.startswith("sp_manual_accept:") or text.startswith("sp_manual_reject:"):
+        if call.from_user.id not in admins:
+            bot.answer_callback_query(call.id, "Только для админов")
+            return
+        number = text.split(":")[1]
+        entry = _sp_pending_pop(number)
+        if not entry:
+            bot.answer_callback_query(call.id, "Заявка не найдена (уже обработана?)")
+            return
+        bot.edit_message_reply_markup(chat_id, call.message.message_id, reply_markup=None)
+        if text.startswith("sp_manual_accept:"):
+            send_to_archives(bot.send_message, f'Заявка №{number}\n✅ Выдана вручную админом @{call.from_user.username}')
+            bot.send_message(entry['user_id'], f"✅ Ваша заявка №{number} выполнена!")
+        else:
+            add_deposit(entry['user_id'], entry['price'], description=f'Возврат — заявка №{number} отклонена')
+            send_to_archives(bot.send_message, f'Заявка №{number}\n❌ Отклонена админом @{call.from_user.username}, деньги возвращены')
+            bot.send_message(entry['user_id'], f"❌ Заявка №{number} отклонена, деньги возвращены на баланс.")
 
     elif text == "vpn_happ":
         markup = types.InlineKeyboardMarkup(row_width=2)
@@ -5603,7 +5917,7 @@ id: {chat_id}
             payment_ids[call.message.chat.id] = None
             bot.send_message(call.message.chat.id, mes, reply_markup=start_markup(call.message.chat.id))
             try:
-                bot.delete_message(chat_id=call.message.chat.id, message_id=call.message.message_id)
+                safe_delete_message(chat_id=call.message.chat.id, message_id=call.message.message_id)
             except Exception:
                 pass
             update_state(call.message, START)
@@ -5626,7 +5940,7 @@ id: {chat_id}
                 mes = f'Заявка №{number}\n😉Ожидайте зачисления на баланс\n⌚️В крайних случаях деньги могут поступить в течении 24-х часов'
                 bot.send_message(adminGroup, f'Заявка №{number}\nПользователь: @{call.message.chat.username} \nid: {call.message.chat.id}\nУслуга: {usluga}\n🎩Ранг: {get_user_rank(call.message.chat.id)}\n💰 Баланс: {get_balans(call.message.chat.id)} ₽\nСумма: {summ}', reply_markup = admin_markup())
                 bot.send_message(call.message.chat.id, mes, reply_markup=start_markup(call.message.chat.id))
-                bot.delete_message(chat_id=call.message.chat.id, message_id=call.message.message_id)
+                safe_delete_message(chat_id=call.message.chat.id, message_id=call.message.message_id)
             elif sposob == "Payeer":
                 bot.send_message(call.message.chat.id, "Отправьте изображение квитанции",
                                  reply_markup=start_markup(call.message.chat.id, text='🚫 Отмена'))
@@ -5914,7 +6228,7 @@ id: {chat_id}
         inline_markup.add(types.InlineKeyboardButton("🇷🇺Карта РФ", callback_data="withdraw_card"))
         bot.send_message(call.message.chat.id, "📲Выберите способ выплаты:", reply_markup=inline_markup)
     elif text == "confirm_card_withdraw":
-        bot.delete_message(chat_id=call.message.chat.id, message_id=call.message.message_id)
+        safe_delete_message(chat_id=call.message.chat.id, message_id=call.message.message_id)
         uid = call.from_user.id
         temp = get_user_temp(uid)
         usluga = f'Вывод средств.\nСпособ оплаты: Карта РФ'
@@ -5952,7 +6266,7 @@ id: {chat_id}
 
         update_state(call.message, START)
     elif text == "confirm_withdraw_sbp":
-        bot.delete_message(chat_id=call.message.chat.id, message_id=call.message.message_id)
+        safe_delete_message(chat_id=call.message.chat.id, message_id=call.message.message_id)
         uid = call.from_user.id
 
         temp = get_user_temp(uid)
@@ -6061,10 +6375,10 @@ id: {chat_id}
             bot.send_message(call.message.chat.id, f'❌ Ошибка при отмене: {e}')
 
     elif text == "esim_cancel_back":
-        bot.delete_message(chat_id=call.message.chat.id, message_id=call.message.message_id)
+        safe_delete_message(chat_id=call.message.chat.id, message_id=call.message.message_id)
 
     elif text == "cancel_withdraw":
-        bot.delete_message(chat_id=call.message.chat.id, message_id=call.message.message_id)
+        safe_delete_message(chat_id=call.message.chat.id, message_id=call.message.message_id)
         uid = call.from_user.id
         clear_user_temp(uid)
         update_state(call.message, START)
@@ -6104,7 +6418,7 @@ id: {chat_id}
         bot.send_message(id,
                 f'📱Ваша заявка №<code>{number}</code>\n✅Успешно обработана!\n✅',
                 reply_markup=inline_markup, parse_mode="HTML")
-        bot.delete_message(chat_id=call.message.chat.id, message_id=call.message.message_id)
+        safe_delete_message(chat_id=call.message.chat.id, message_id=call.message.message_id)
         send_to_archives(bot.send_message, f'Дата: {date}\nЗаявка №{number}\nПользователь: {user}\nid: {id}\nУслуга: Вывод средств СБП \nСумма: {sum + comm}\nСумма без комисии: {sum}\n🎩Ранг: {get_user_rank(id)}\n💰 Баланс: {get_balans(id)} ₽\nСтатус: ✅Одобрено\n\n Заявку закрыл(а): {call.from_user.username}')
         clear_user_temp(id)
     elif text == 'nogoodWH':
@@ -6116,7 +6430,7 @@ id: {chat_id}
         amount = temp.get("amount")
         bot.answer_callback_query(callback_query_id=call.id, text=f"Заявка №{number} отклонена")
         bot.send_message(id, f"❌Заявка №{number} отклонена❌")
-        bot.delete_message(chat_id=call.message.chat.id, message_id=call.message.message_id)
+        safe_delete_message(chat_id=call.message.chat.id, message_id=call.message.message_id)
         date = datetime.now().date().strftime('%d.%m.%Y')
         add_deposit(int(id), str(amount), description='Отмена вывода СБП (возврат)')
 
@@ -6129,7 +6443,7 @@ id: {chat_id}
             "🔑 Введите ключ:",
             reply_markup=start_markup(call.message.chat.id, text='🚫 Отмена')
         )
-        bot.delete_message(chat_id=call.message.chat.id, message_id=call.message.message_id)
+        safe_delete_message(chat_id=call.message.chat.id, message_id=call.message.message_id)
         update_state(call.message, ACCEPTED_KEY)
     elif text == 'nogoodKomWH':
         print(call.message.text)
@@ -6155,7 +6469,7 @@ id: {chat_id}
         bot.send_message(id,
                          f'📱Ваша заявка №<code>{number}</code>\n✅Успешно обработана!\n✅',
                          reply_markup=inline_markup, parse_mode="HTML")
-        bot.delete_message(chat_id=call.message.chat.id, message_id=call.message.message_id)
+        safe_delete_message(chat_id=call.message.chat.id, message_id=call.message.message_id)
         send_to_archives(bot.send_message,
                          f'Дата: {date}\nЗаявка №{number}\nПользователь: {user}\nid: {id}\nУслуга: Вывод средств Карта РФ \nСумма: {sum + comm}\nСумма без комисии: {sum}\n🎩Ранг: {get_user_rank(id)}\n💰 Баланс: {get_balans(id)} ₽\nСтатус: ✅Одобрено\n\n Заявку закрыл(а): {call.from_user.username}')
         clear_user_temp(id)
@@ -6167,7 +6481,7 @@ id: {chat_id}
         amount = temp.get("amount")
         bot.answer_callback_query(callback_query_id=call.id, text=f"Заявка №{number} отклонена")
         bot.send_message(id, f"❌Заявка №{number} отклонена❌")
-        bot.delete_message(chat_id=call.message.chat.id, message_id=call.message.message_id)
+        safe_delete_message(chat_id=call.message.chat.id, message_id=call.message.message_id)
         date = datetime.now().date().strftime('%d.%m.%Y')
         add_deposit(int(id), str(amount), description='Отмена вывода карта РФ (возврат)')
         print(id, amount)
@@ -6261,7 +6575,7 @@ id: {chat_id}
                     opl = message_text_check.split("Способ оплаты: ")[1].split("\n")[0]
                     usluga+=f'\nСпособ оплаты: {opl}'
                     bot.send_message(id, f'📱Ваша заявка №<code>{number}</code>\n✅Успешно обработана!\n✅Вам на баланс начислено {sum_with_promocode}₽', reply_markup = inline_markup, parse_mode="HTML")
-                    bot.delete_message(chat_id=call.message.chat.id, message_id=call.message.message_id)
+                    safe_delete_message(chat_id=call.message.chat.id, message_id=call.message.message_id)
                     date = datetime.now().date().strftime('%d.%m.%Y')
                     if data_format == "jpg":
                         try:
@@ -6293,7 +6607,7 @@ id: {chat_id}
                     opl = message_text_check.split("Способ оплаты: ")[1].split("\n")[0]
                     usluga+=f'\nСпособ оплаты: {opl}'
                     bot.send_message(id, f'📱Ваша заявка №<code>{number}</code>\n✅Успешно обработана!\n✅Вам на баланс начислено {sum}₽', reply_markup = inline_markup, parse_mode="HTML")
-                    bot.delete_message(chat_id=call.message.chat.id, message_id=call.message.message_id)
+                    safe_delete_message(chat_id=call.message.chat.id, message_id=call.message.message_id)
                     date = datetime.now().date().strftime('%d.%m.%Y')
                     if data_format == "jpg":
                         try:
@@ -6331,7 +6645,7 @@ id: {chat_id}
                 c = cancel_request(message_text_check)
                 
                 bot.send_message(id, f"❌Заявка №{number} отклонена❌")
-                bot.delete_message(chat_id=call.message.chat.id, message_id=call.message.message_id)
+                safe_delete_message(chat_id=call.message.chat.id, message_id=call.message.message_id)
                 date = datetime.now().date().strftime('%d.%m.%Y')
                 if data_format == "jpg":
                     with open(f"receipt_{id}.jpg", 'rb') as new_file:
@@ -6431,7 +6745,7 @@ id: {chat_id}
                         bot.send_message(id, f'📱Ваша заявка №<code>{number}</code>\n✅Успешно обработана!', reply_markup = inline_markup, parse_mode="HTML")
                     except Exception:
                         pass
-                bot.delete_message(chat_id=call.message.chat.id, message_id=call.message.message_id)
+                safe_delete_message(chat_id=call.message.chat.id, message_id=call.message.message_id)
                 date = datetime.now().date().strftime('%d.%m.%Y')
                 if "Украина" in usluga:
                     referer = get_ref_user(id)
@@ -6492,7 +6806,7 @@ id: {chat_id}
                     except Exception:
                         pass
                     try:
-                        bot.delete_message(chat_id=call.message.chat.id, message_id=call.message.message_id)
+                        safe_delete_message(chat_id=call.message.chat.id, message_id=call.message.message_id)
                     except Exception:
                         try:
                             bot.edit_message_reply_markup(chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=None)
@@ -6632,7 +6946,7 @@ id: {chat_id}
             bot.register_next_step_handler(call.message, process_dialog, mess=call.message)
         elif text == 'stop_dialog':
             USER_STATE[int(id)]=START
-            bot.delete_message(chat_id=call.message.chat.id, message_id=call.message.message_id)
+            safe_delete_message(chat_id=call.message.chat.id, message_id=call.message.message_id)
     elif text == 'akk_ok' or text == 'akk_cancel':
         if text == 'akk_ok':
             summ = int(call.message.text.split('на оплату в сумме ')[1].split('₽')[0])
@@ -6645,7 +6959,7 @@ id: {chat_id}
                 update_total_spent(call.message.chat.id, float(summ))
                 bot.send_message(call.message.chat.id, f'✅Готово\nВаша заявка №<code>{number}</code> уже в обработке!', reply_markup = start_markup(call.message.chat.id), parse_mode="HTML")
                 bot.send_message(adminGroup, f'Заявка №{number}\nПользователь: @{call.message.chat.username} \nid: {call.message.chat.id}\nУслуга: {usluga}\n🎩Ранг: {get_user_rank(call.message.chat.id)}\n💰 Баланс: {balance_before} → {balance_after} ₽\nСумма: {summ}', reply_markup = admin_markup())
-                bot.delete_message(chat_id=call.message.chat.id, message_id=call.message.message_id)
+                safe_delete_message(chat_id=call.message.chat.id, message_id=call.message.message_id)
             else:
                 update_state(call.message, START)
                 bot.send_message(call.message.chat.id, 'Недостаточно средств', reply_markup = start_markup(call.message.chat.id))
@@ -6653,7 +6967,7 @@ id: {chat_id}
                 inline_markup.add(types.InlineKeyboardButton("Пополнить баланс", callback_data="add_balanse"))
                 bot.send_message(call.message.chat.id, 'Пополните баланс', reply_markup = inline_markup)
         elif text == 'akk_cancel':
-            bot.delete_message(chat_id=call.message.chat.id, message_id=call.message.message_id)
+            safe_delete_message(chat_id=call.message.chat.id, message_id=call.message.message_id)
             bot.send_message(call.message.chat.id, "Вы отклонили оплату")
     elif text == 'otvet':
         mes = bot.send_message(call.message.chat.id, "Введите Сообщение:")
@@ -6674,7 +6988,7 @@ id: {chat_id}
         bot.register_next_step_handler(msg, admin_balance_history_handler)
     elif text == "resume_request":
         try:
-            bot.delete_message(call.message.chat.id, call.message.message_id)
+            safe_delete_message(call.message.chat.id, call.message.message_id)
         except Exception as e:
             print(f"Ошибка при удалении сообщения: {e}")
         if call.message.chat.id not in USER_REQUEST_DATA or not USER_REQUEST_DATA[call.message.chat.id].get("sum"):
@@ -6804,7 +7118,7 @@ id: {chat_id}
             admin_msg = bot.send_message(adminGroup, f'Заявка №{number}\nПользователь: @{call.message.chat.username} \nid: {call.message.chat.id}\nУслуга: {usluga}\n🎩Ранг: {get_user_rank(call.message.chat.id)}\n💰 Баланс: {balance_before} → {balance_after} ₽\nСумма в грн.: {orig_suma}\nСумма: {suma}{profit_line}', reply_markup = admin_markup())
             register_request(number, admin_msg.message_id, adminGroup)
             bot.send_message(call.message.chat.id, f'✅Готово\nВаша заявка №<code>{number}</code> уже в обработке!', reply_markup = start_markup(call.message.chat.id), parse_mode="HTML")
-            bot.delete_message(chat_id=call.message.chat.id, message_id=call.message.message_id)
+            safe_delete_message(chat_id=call.message.chat.id, message_id=call.message.message_id)
         else:
             update_state(call.message, START)
             USER_WAIT_FOR_CONTINUE[int(call.message.chat.id)] = True
@@ -6824,7 +7138,7 @@ id: {chat_id}
         # sum =  get_par("sum", call.message.chat.id)
         # add_deposit(chat_id, str(sum))
         bot.send_message(chat_id, f"❌Отклонено❌", reply_markup = start_markup(call.message.chat.id))
-        bot.delete_message(chat_id=call.message.chat.id, message_id=call.message.message_id)
+        safe_delete_message(chat_id=call.message.chat.id, message_id=call.message.message_id)
 
     elif text == 'ru_ok':
         message_text = call.message.text
@@ -6840,7 +7154,7 @@ id: {chat_id}
             number = to_arhiv(call.message.chat.id, usluga, suma)
             bot.send_message(adminGroup, f'Заявка №{number}\nПользователь: @{call.message.chat.username} \nid: {call.message.chat.id}\nУслуга: {usluga}\n🎩Ранг: {get_user_rank(call.message.chat.id)}\n💰 Баланс: {balance_before} → {balance_after} ₽\nСумма: {suma}\nСумма без комисии: {sum_bez_com}', reply_markup = admin_markup())
             bot.send_message(call.message.chat.id, f'✅Готово\nВаша заявка №<code>{number}</code> уже в обработке!', reply_markup = start_markup(call.message.chat.id), parse_mode="HTML")
-            bot.delete_message(chat_id=call.message.chat.id, message_id=call.message.message_id)
+            safe_delete_message(chat_id=call.message.chat.id, message_id=call.message.message_id)
         else:
             update_state(call.message, START)
             USER_WAIT_FOR_CONTINUE[int(call.message.chat.id)] = True
@@ -6860,7 +7174,7 @@ id: {chat_id}
         # sum =  get_par("sum", call.message.chat.id)
         # add_deposit(chat_id, str(sum))
         bot.send_message(chat_id, f"❌Отклонено❌", reply_markup = start_markup(call.message.chat.id))
-        bot.delete_message(chat_id=call.message.chat.id, message_id=call.message.message_id)
+        safe_delete_message(chat_id=call.message.chat.id, message_id=call.message.message_id)
 
     elif text == "es_ok":
         message_text = call.message.text
@@ -6877,7 +7191,7 @@ id: {chat_id}
             # round(float(suma)/get_kurs("eur"),2)
             bot.send_message(adminGroup, f'Заявка №{number}\nПользователь: @{call.message.chat.username} \nid: {call.message.chat.id}\nУслуга: {usluga}\n🎩Ранг: {get_user_rank(call.message.chat.id)}\n💰 Баланс: {balance_before} → {balance_after} ₽\nСумма в евро: {orig_suma}\nСумма: {suma}', reply_markup = admin_markup())
             bot.send_message(call.message.chat.id, f'✅Готово\nВаша заявка №<code>{number}</code> уже в обработке!', reply_markup = start_markup(call.message.chat.id), parse_mode="HTML")
-            bot.delete_message(chat_id=call.message.chat.id, message_id=call.message.message_id)
+            safe_delete_message(chat_id=call.message.chat.id, message_id=call.message.message_id)
         else:
             update_state(call.message, START)
             bot.send_message(call.message.chat.id, 'Недостаточно средств', reply_markup = start_markup(call.message.chat.id))
@@ -6889,7 +7203,7 @@ id: {chat_id}
         # sum =  get_par("sum", call.message.chat.id)
         # add_deposit(chat_id, str(sum))
         bot.send_message(chat_id, f"❌Отклонено❌", reply_markup = start_markup(call.message.chat.id))
-        bot.delete_message(chat_id=call.message.chat.id, message_id=call.message.message_id)
+        safe_delete_message(chat_id=call.message.chat.id, message_id=call.message.message_id)
 
     elif text == "check_subscribe_button":
         if check_subscribe(call.from_user.id, debug=True):
@@ -7029,7 +7343,7 @@ id: {chat_id}
             bot.send_message(call.message.chat.id, f'✅Готово', reply_markup = start_markup(call.message.chat.id), parse_mode="HTML")
             send_to_archives(bot.send_message, f"Номер заявки: {number}\nId пользователя: {call.message.chat.id}\nПользователь: @{call.message.chat.username}\nСумма: {summ}\n🎩Ранг: {get_user_rank(call.message.chat.id)}\n💰 Баланс: {balance_before} → {balance_after} ₽\nТовар: {usluga}")
             # bot.send_message(adminGroup, f'Заявка №{number}\nПользователь: @{call.message.chat.username} \nid: {call.message.chat.id}\nУслуга: {usluga}\nСумма: {summ}', reply_markup = admin_markup())
-            bot.delete_message(chat_id=call.message.chat.id, message_id=call.message.message_id)
+            safe_delete_message(chat_id=call.message.chat.id, message_id=call.message.message_id)
         else:
             update_state(call.message, START)
             bot.send_message(call.message.chat.id, 'Недостаточно средств', reply_markup = start_markup(call.message.chat.id))
@@ -7037,7 +7351,7 @@ id: {chat_id}
             inline_markup.add(types.InlineKeyboardButton("Пополнить баланс", callback_data="add_balanse"))
             bot.send_message(call.message.chat.id, 'Пополните баланс', reply_markup = inline_markup)
     elif text == "invoice_cancel":
-        bot.delete_message(chat_id=call.message.chat.id, message_id=call.message.message_id)
+        safe_delete_message(chat_id=call.message.chat.id, message_id=call.message.message_id)
         bot.send_message(call.message.chat.id, "Вы отклонили оплату")
     elif text == "add_yoomoney_requisites":
         bot.send_message(call.message.chat.id, "Введите номер телефона для реквизитов", reply_markup=start_markup(call.message.chat.id, text='🚫 Отмена'))
@@ -7186,7 +7500,7 @@ def admin_num(message, user_chat_id, summ):
                          reply_markup=admin_markup())
         bot.send_message(message.chat.id, f'✅Готово\nВаша заявка №<code>{number}</code> уже в обработке!',
                          reply_markup=start_markup(message.chat.id), parse_mode="HTML")
-        bot.delete_message(chat_id=message.chat.id, message_id=message.message_id)
+        safe_delete_message(chat_id=message.chat.id, message_id=message.message_id)
     else:
         update_state(message, START)
         bot.send_message(message.chat.id, 'У пользователя недостаточно средств', reply_markup=start_markup(message.chat.id))
@@ -7251,11 +7565,11 @@ def handle_schet2_comment(mess, del1, del2, sum,main):
     inline_markup.add(inline_button2)
     bot.send_message(id, f"✅Заявка №{number}\nВам пришёл счёт на оплату в сумме {summa}₽\nТовар:\n{usluga}", reply_markup=inline_markup)
     c = cancel_request(f'Заявка №{id}\n')
-    bot.delete_message(chat_id=mess.chat.id, message_id=mess.message_id)
-    bot.delete_message(chat_id=del1.chat.id, message_id=del1.message_id)
-    bot.delete_message(chat_id=del2.chat.id, message_id=del2.message_id)
-    bot.delete_message(chat_id=sum.chat.id, message_id=sum.message_id)
-    #bot.delete_message(chat_id=main.chat.id, message_id=main.message_id)
+    safe_delete_message(chat_id=mess.chat.id, message_id=mess.message_id)
+    safe_delete_message(chat_id=del1.chat.id, message_id=del1.message_id)
+    safe_delete_message(chat_id=del2.chat.id, message_id=del2.message_id)
+    safe_delete_message(chat_id=sum.chat.id, message_id=sum.message_id)
+    #safe_delete_message(chat_id=main.chat.id, message_id=main.message_id)
 
 ############
 def process_nogoodKom_comment(message, **kwargs):
@@ -7274,9 +7588,9 @@ def handle_nogoodKom_comment(mess, comment, k, call):
         logging.info(f"{mess}")
         if c:
             bot.send_message(id, f"❌Заявка №{number} отклонена❌\nКомментарий: {comment.text}")
-            bot.delete_message(chat_id=mess.chat.id, message_id=mess.message_id)
-            bot.delete_message(chat_id=comment.chat.id, message_id=comment.message_id)
-            bot.delete_message(chat_id=k.chat.id, message_id=k.message_id)
+            safe_delete_message(chat_id=mess.chat.id, message_id=mess.message_id)
+            safe_delete_message(chat_id=comment.chat.id, message_id=comment.message_id)
+            safe_delete_message(chat_id=k.chat.id, message_id=k.message_id)
             date = datetime.now().date().strftime('%d.%m.%Y')
             with open(f"receipt_{id}.jpg", 'rb') as new_file:
                 send_photo_to_archives(new_file.read(), caption=f'Дата: {date}\nЗаявка №{number}\nПользователь: {user}\nid: {id}\nУслуга: {usluga}\nСумма: {sum}\n🎩Ранг: {get_user_rank(id)}\n💰 Баланс: {get_balans(id)} ₽\nСтатус: ❌Отменено с коментарием\nКомментарий: {comment.text}\n\n Заявку закрыл(а): {call.from_user.username}')
@@ -7293,9 +7607,9 @@ def handle_nogoodKom_comment(mess, comment, k, call):
         c = cancel_request(mess.text)
         if c:
             bot.send_message(id, f"❌Заявка №{number} отклонена❌\nКомментарий: {comment.text}")
-            bot.delete_message(chat_id=mess.chat.id, message_id=mess.message_id)
-            bot.delete_message(chat_id=comment.chat.id, message_id=comment.message_id)
-            bot.delete_message(chat_id=k.chat.id, message_id=k.message_id)
+            safe_delete_message(chat_id=mess.chat.id, message_id=mess.message_id)
+            safe_delete_message(chat_id=comment.chat.id, message_id=comment.message_id)
+            safe_delete_message(chat_id=k.chat.id, message_id=k.message_id)
             date = datetime.now().date().strftime('%d.%m.%Y')
             send_to_archives(bot.send_message, f'Дата: {date}\nЗаявка №{number}\nПользователь: {user}\nid: {id}\nУслуга: {usluga}\nСумма: {sum}\n🎩Ранг: {get_user_rank(id)}\n💰 Баланс: {get_balans(id)} ₽\nСтатус: ❌Отменено с коментарием\nКомментарий: {comment.text}')
         else:
@@ -7324,9 +7638,9 @@ def handle_good_with_mes_comment(mess, comment, k, call):
             bot.send_message(id, f"📱Ваша заявка №<code>{number}</code>\n✅Успешно обработана!\nКомментарий: {comment.text}", parse_mode="HTML")
         date = datetime.now().date().strftime('%d.%m.%Y')
         send_to_archives(bot.send_message, f'Дата: {date}\nЗаявка №{number}\nПользователь: {user}\nid: {id}\nУслуга: {usluga}\nСумма: {sum}\n🎩Ранг: {get_user_rank(id)}\n💰 Баланс: {get_balans(id)} ₽\nСтатус: ✅Одобрено\n\n Заявку закрыл(а): {call.from_user.username}')
-        bot.delete_message(chat_id=mess.chat.id, message_id=mess.message_id)
-        bot.delete_message(chat_id=comment.chat.id, message_id=comment.message_id)
-        bot.delete_message(chat_id=k.chat.id, message_id=k.message_id)
+        safe_delete_message(chat_id=mess.chat.id, message_id=mess.message_id)
+        safe_delete_message(chat_id=comment.chat.id, message_id=comment.message_id)
+        safe_delete_message(chat_id=k.chat.id, message_id=k.message_id)
 ############
 UA_MOBILE_KEYWORDS = [
     "vodafone", "kyivstar", "lifecell", "киевстар", "водафон", "лайф", "лайфсел", "лайвсел", "водофон", "вадафон", "київстар",
@@ -7428,9 +7742,9 @@ def VPN(message):
 def get_text_messages(message):
     text = message.text.strip().lower()
     '''Обрабатывает входящие текстовые сообщения в бота'''
-
     if message.text == '📲Мобильный':
         send_mobile_menu(message)
+        
     elif text in UA_MOBILE_KEYWORDS:
         chat_id = message.chat.id
         json_data = json.load(open("analytic_clicks_data.json", encoding="utf-8"))
@@ -7523,18 +7837,24 @@ def get_text_messages(message):
         svyaz(message)
     elif message.text == "⚡️VPN⚡️" or text in VPN_KEYWORDS:
         VPN(message)
+    elif message.text == "⭐️Звёзды и Premium":
+        markup = types.InlineKeyboardMarkup(row_width=1)
+        markup.add(types.InlineKeyboardButton("⭐ Купить Звёзды", callback_data="sp_buy_stars"))
+        markup.add(types.InlineKeyboardButton("💎 Купить Premium", callback_data="sp_buy_premium"))
+        bot.send_message(message.chat.id, "⭐️ Звёзды и Premium Telegram — выберите, что купить:", reply_markup=markup)
+    elif message.text == "💫Цены Звёзд/Premium":
+        if message.chat.id in admins:
+            cfg = _sp_config()
+            bot.send_message(message.chat.id,
+                f"Текущие цены:\nЗвезда: {cfg['star_price']}₽\n"
+                f"Premium 3 мес: {cfg['premium_prices']['3']}₽\n"
+                f"Premium 6 мес: {cfg['premium_prices']['6']}₽\n"
+                f"Premium 12 мес: {cfg['premium_prices']['12']}₽\n\n"
+                f"Введите новые значения одной строкой в формате:\n"
+                f"<code>звезда 3мес 6мес 12мес</code>\nНапример: <code>1.6 1200 2100 3800</code>",
+                parse_mode="HTML", reply_markup=start_markup(message.chat.id, text='🚫 Отмена'))
+            update_state(message, SP_PRICE_EDIT)
 
-
-    elif message.text == "🛜Интернет":
-
-        json_data = json.load(open("analytic_clicks_data.json", encoding="utf-8"))
-        json_data["Интернет"] += 1
-        with open("analytic_clicks_data.json", "w", encoding="utf-8") as json_file:
-            json.dump(json_data, json_file, ensure_ascii=False, indent=4)
-
-        inline_markup = types.InlineKeyboardMarkup(row_width=True)
-        inline_markup.add(types.InlineKeyboardButton("RostNet", callback_data="RostNet"))
-        bot.send_message(message.chat.id, '🟢 Выберите провайдера', reply_markup = inline_markup)
     elif message.text == "💵Курс валют":
         inline_markup = types.InlineKeyboardMarkup(row_width=True)
         inline_button1 = types.InlineKeyboardButton(f"🇺🇸USD {str(get_kurs('usd'))}", callback_data="vusd")

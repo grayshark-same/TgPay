@@ -7,8 +7,10 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 import jwt
+import requests
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, Request
+from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
@@ -31,6 +33,9 @@ JWT_EXPIRE_DAYS = 30
 USERS_DB = "files/users.db"
 ARCHIVE_DB = "files/arhive.db"
 VPN_BOT_DB = os.getenv("VPN_BOT_DB", "/root/vpn_bot/data/users.db")
+ARHIVE_GROUPS = [int(x) for x in os.environ["ARHIVE_GROUPS"].split(",")]
+ISTAR_WEBHOOK_SECRET = os.getenv("ISTAR_WEBHOOK_SECRET")
+SP_PENDING_FILE = "stars_premium_pending.json"
 
 security = HTTPBearer()
 
@@ -459,6 +464,119 @@ def purchase_esim(body: EsimPurchaseRequest, tg_id: int = Depends(_get_current_u
         "balance_after": round(new_balance, 2),
         "note": "Заявка принята. Ожидайте выполнения.",
     }
+
+
+# ── iStar webhook (Stars/Premium через Fragment) ──────────────────────────────
+
+SP_PENDING_FILE = "stars_premium_pending.json"
+
+
+def _tg_send(chat_id, text):
+    try:
+        requests.post(
+            f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+            json={"chat_id": chat_id, "text": text},
+            timeout=10,
+        )
+    except Exception as e:
+        print(f"[istar webhook] Ошибка отправки сообщения {chat_id}: {e}")
+
+
+def _tg_send_archive(text):
+    for gid in ARHIVE_GROUPS:
+        try:
+            requests.post(
+                f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+                json={"chat_id": gid, "text": text},
+                timeout=10,
+            )
+        except Exception as e:
+            print(f"[istar webhook] Ошибка отправки в архив {gid}: {e}")
+
+
+def _sp_pending_find_by_istar_id(istar_order_id):
+    try:
+        with open(SP_PENDING_FILE, encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return None, None
+    for number, entry in data.items():
+        if entry.get("istar_order_id") == istar_order_id:
+            return number, entry
+    return None, None
+
+
+def _sp_pending_remove(number):
+    try:
+        with open(SP_PENDING_FILE, encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return
+    data.pop(str(number), None)
+    with open(SP_PENDING_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=4)
+
+
+def _refund(tg_id, price, description):
+    now = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+    with sqlite3.connect(USERS_DB) as db:
+        row = db.execute("SELECT balans FROM users WHERE id = ?", (tg_id,)).fetchone()
+        balance = float((row[0] if row else 0) or 0)
+        new_balance = round(balance + price, 2)
+        db.execute("UPDATE users SET balans = ? WHERE id = ?", (new_balance, tg_id))
+        db.execute(
+            "INSERT INTO balance_log (user_id, amount, balance_after, description, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (tg_id, price, new_balance, description, now),
+        )
+    return new_balance
+
+
+@app.post("/webhooks/istar")
+async def istar_webhook(request: Request):
+    raw_body = await request.body()
+
+    if ISTAR_WEBHOOK_SECRET:
+        signature = request.headers.get("X-iStar-Signature", "")
+        expected = hmac.new(ISTAR_WEBHOOK_SECRET.encode(), raw_body, hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(signature, expected):
+            raise HTTPException(status_code=401, detail="invalid signature")
+
+    payload = json.loads(raw_body)
+    event_type = payload.get("event_type")
+    order = payload.get("order", {})
+    istar_order_id = order.get("id")
+
+    number, entry = _sp_pending_find_by_istar_id(istar_order_id)
+    if not entry:
+        # Заказ не найден в очереди (уже обработан вручную админом, либо
+        # событие не относится к нашим заказам) — отвечаем 200, чтобы iStar
+        # не повторял доставку вебхука.
+        return {"ok": True, "note": "order not found in pending queue"}
+
+    user_id = entry["user_id"]
+    price = entry["price"]
+    kind = entry["kind"]
+    recipient = entry["recipient"]
+    qty_or_months = entry["qty_or_months"]
+    service_label = (f"⭐ Звёзды x{qty_or_months} для @{recipient}" if kind == "stars"
+                     else f"💎 Premium {qty_or_months} мес. для @{recipient}")
+
+    if event_type == "order.completed":
+        _sp_pending_remove(number)
+        _tg_send(user_id, f"✅ Ваша заявка №{number} выполнена!")
+        _tg_send_archive(f"Заявка №{number}\nid: {user_id}\nУслуга: {service_label}\n"
+                         f"Сумма: {price}₽\nСтатус: ✅Одобрено (iStar)")
+    elif event_type == "order.failed":
+        _sp_pending_remove(number)
+        new_balance = _refund(user_id, price, f"Возврат — заявка №{number} (iStar order failed)")
+        reason = order.get("payload", {}).get("reason") or payload.get("error") or "неизвестно"
+        _tg_send(user_id, f"❌ Заявка №{number} не выполнена, деньги возвращены на баланс.")
+        _tg_send_archive(f"Заявка №{number}\nid: {user_id}\nУслуга: {service_label}\n"
+                         f"Сумма: {price}₽\n💰 Баланс после возврата: {new_balance}₽\n"
+                         f"Статус: ❌Отклонено (iStar: {reason})")
+
+    return {"ok": True}
 
 
 @app.get("/tg-auth", response_class=HTMLResponse)

@@ -9,7 +9,7 @@ from telebot import types
 from hashlib import md5
 import requests
 import base64
-import logging
+import loggingf
 import pytz
 import textwrap
 from PIL import Image, ImageDraw, ImageFont

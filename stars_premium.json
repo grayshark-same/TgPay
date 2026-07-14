@@ -1,0 +1,10 @@
+{
+    "star_price": 2.5,
+    "premium_prices": {
+        "3": 1920,
+        "6": 3360,
+        "12": 6080
+    },
+    "stars_min": 50,
+    "stars_max": 10000000
+}
